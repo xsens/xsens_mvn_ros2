@@ -76,8 +76,22 @@ inline std::string frameName(const std::string & model, const std::string & segm
 class SkeletonPublisher
 {
 public:
+  /// @param node            Owning lifecycle node.
+  /// @param tf_broadcaster   Shared TF broadcaster.
+  /// @param model_name       TF frame prefix for this model.  Empty means "use
+  ///                         the node's model_name parameter", which is what a
+  ///                         single-model node wants.
+  /// @param topic_prefix     Sub-namespace for link_states/joint_states.  Empty
+  ///                         publishes on the bare topic names.  Multi-avatar
+  ///                         nodes give each non-primary avatar its own prefix
+  ///                         so the topics do not collide.
+  /// @param publish_joint_states  False for a model that has no joints (a
+  ///                         tracked object), so it does not advertise a
+  ///                         joint_states topic that could only ever be empty.
   SkeletonPublisher(
-    rclcpp_lifecycle::LifecycleNode & node, tf2_ros::TransformBroadcaster & tf_broadcaster);
+    rclcpp_lifecycle::LifecycleNode & node, tf2_ros::TransformBroadcaster & tf_broadcaster,
+    const std::string & model_name = "", const std::string & topic_prefix = "",
+    bool publish_joint_states = true);
 
   /// Publish TF transforms (relative parent-child) and LinkStateArray for all segments.
   /// @param stamp       Message timestamp.
@@ -110,6 +124,9 @@ private:
   // Cached parameters to avoid per-publish string allocation
   std::string cached_model_name_;
   std::string cached_reference_frame_;
+  // Non-empty when the model name was supplied explicitly rather than read
+  // from the node parameter.
+  std::string model_name_override_;
 };
 
 }  // namespace xsens_mvn_ros2

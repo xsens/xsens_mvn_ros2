@@ -13,6 +13,42 @@ xsens_stream_node:
     description: "UDP port to listen on for MVN Studio data"
     validation:
       bounds<>: [1024, 65535]
+  avatar_id:
+    type: int
+    default_value: 0
+    description: >
+      MVN avatar (character) to track.  MVN streams every avatar on the same
+      port - the captured subject plus any tracked objects/props - tagged by an
+      avatar id in each datagram header.  Datagrams from other avatars are
+      discarded, since parsing them would overwrite this avatar's pose data.
+      The captured subject is avatar 0; objects are numbered from 1.
+    validation:
+      bounds<>: [0, 255]
+  track_all_avatars:
+    type: bool
+    default_value: false
+    description: >
+      Publish every avatar MVN streams, not just avatar_id.  Each additional
+      avatar - a second suit, or a tracked object - gets its own TF prefix and
+      its own link_states/joint_states topics under that name.  When false only
+      avatar_id is published, which is the single-suit behaviour.
+  avatar_names:
+    type: string_array
+    default_value: []
+    description: >
+      Optional TF prefix per avatar, indexed by avatar id, e.g.
+      ["actor", "prop"] names avatar 0 "actor" and avatar 1 "prop".  Ids without
+      an entry fall back to model_name for the primary avatar and
+      "<model_name>_<id>" for the others.
+  avatar_stale_timeout:
+    type: double
+    default_value: 1.0
+    description: >
+      Seconds without data after which an avatar stops being published.  MVN
+      avatars can drop out mid-session, and republishing their last pose would
+      leave a stale frame in TF.
+    validation:
+      gt<>: [0.0]
   update_frequency:
     type: int
     default_value: 100

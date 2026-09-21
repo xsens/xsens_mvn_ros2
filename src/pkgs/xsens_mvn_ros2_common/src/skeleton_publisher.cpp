@@ -9,19 +9,26 @@ namespace xsens_mvn_ros2
 {
 
 SkeletonPublisher::SkeletonPublisher(
-  rclcpp_lifecycle::LifecycleNode & node, tf2_ros::TransformBroadcaster & tf_broadcaster)
-: node_(node), tf_broadcaster_(tf_broadcaster)
+  rclcpp_lifecycle::LifecycleNode & node, tf2_ros::TransformBroadcaster & tf_broadcaster,
+  const std::string & model_name, const std::string & topic_prefix,
+  bool publish_joint_states)
+: node_(node), tf_broadcaster_(tf_broadcaster), model_name_override_(model_name)
 {
-  joint_state_pub_ = node_.create_publisher<sensor_msgs::msg::JointState>(
-    "joint_states", rclcpp::SystemDefaultsQoS());
+  const std::string prefix = topic_prefix.empty() ? "" : topic_prefix + "/";
+  if (publish_joint_states) {
+    joint_state_pub_ = node_.create_publisher<sensor_msgs::msg::JointState>(
+      prefix + "joint_states", rclcpp::SystemDefaultsQoS());
+  }
   link_state_pub_ = node_.create_publisher<xsens_mvn_msgs::msg::LinkStateArray>(
-    "link_states", rclcpp::SystemDefaultsQoS());
+    prefix + "link_states", rclcpp::SystemDefaultsQoS());
   cacheParameters();
 }
 
 void SkeletonPublisher::cacheParameters()
 {
-  cached_model_name_ = node_.get_parameter("model_name").as_string();
+  cached_model_name_ = model_name_override_.empty() ?
+    node_.get_parameter("model_name").as_string() :
+    model_name_override_;
   cached_reference_frame_ = node_.get_parameter("reference_frame").as_string();
 }
 
@@ -130,7 +137,7 @@ void SkeletonPublisher::publishLinkStates(
 void SkeletonPublisher::publishJointStates(
   const rclcpp::Time & stamp, const std::vector<JointAngles> & joints)
 {
-  if (joint_state_pub_->get_subscription_count() == 0) {
+  if (!joint_state_pub_ || joint_state_pub_->get_subscription_count() == 0) {
     return;
   }
   const auto & model_name = cached_model_name_;
@@ -151,13 +158,17 @@ void SkeletonPublisher::publishJointStates(
 void SkeletonPublisher::activate()
 {
   link_state_pub_->on_activate();
-  joint_state_pub_->on_activate();
+  if (joint_state_pub_) {
+    joint_state_pub_->on_activate();
+  }
 }
 
 void SkeletonPublisher::deactivate()
 {
   link_state_pub_->on_deactivate();
-  joint_state_pub_->on_deactivate();
+  if (joint_state_pub_) {
+    joint_state_pub_->on_deactivate();
+  }
 }
 
 }  // namespace xsens_mvn_ros2
