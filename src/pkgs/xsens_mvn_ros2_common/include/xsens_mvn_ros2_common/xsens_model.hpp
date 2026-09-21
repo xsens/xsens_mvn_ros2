@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #pragma once
 
+#include <array>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -36,6 +37,28 @@ inline std::string xmeSegmentToCanonical(const std::string & sdk_name)
     {"LeftLowerLeg", "left_lower_leg"},
     {"LeftFoot", "left_foot"},
     {"LeftToe", "left_toe"},
+    // Finger segments (MANUS gloves); see handSegmentSuffixes() below.
+    {"LeftCarpus", "left_carpus"}, {"RightCarpus", "right_carpus"},
+    {"LeftFirstMC", "left_first_mc"}, {"LeftFirstPP", "left_first_pp"},
+    {"LeftFirstDP", "left_first_dp"},
+    {"LeftSecondMC", "left_second_mc"}, {"LeftSecondPP", "left_second_pp"},
+    {"LeftSecondMP", "left_second_mp"}, {"LeftSecondDP", "left_second_dp"},
+    {"LeftThirdMC", "left_third_mc"}, {"LeftThirdPP", "left_third_pp"},
+    {"LeftThirdMP", "left_third_mp"}, {"LeftThirdDP", "left_third_dp"},
+    {"LeftFourthMC", "left_fourth_mc"}, {"LeftFourthPP", "left_fourth_pp"},
+    {"LeftFourthMP", "left_fourth_mp"}, {"LeftFourthDP", "left_fourth_dp"},
+    {"LeftFifthMC", "left_fifth_mc"}, {"LeftFifthPP", "left_fifth_pp"},
+    {"LeftFifthMP", "left_fifth_mp"}, {"LeftFifthDP", "left_fifth_dp"},
+    {"RightFirstMC", "right_first_mc"}, {"RightFirstPP", "right_first_pp"},
+    {"RightFirstDP", "right_first_dp"},
+    {"RightSecondMC", "right_second_mc"}, {"RightSecondPP", "right_second_pp"},
+    {"RightSecondMP", "right_second_mp"}, {"RightSecondDP", "right_second_dp"},
+    {"RightThirdMC", "right_third_mc"}, {"RightThirdPP", "right_third_pp"},
+    {"RightThirdMP", "right_third_mp"}, {"RightThirdDP", "right_third_dp"},
+    {"RightFourthMC", "right_fourth_mc"}, {"RightFourthPP", "right_fourth_pp"},
+    {"RightFourthMP", "right_fourth_mp"}, {"RightFourthDP", "right_fourth_dp"},
+    {"RightFifthMC", "right_fifth_mc"}, {"RightFifthPP", "right_fifth_pp"},
+    {"RightFifthMP", "right_fifth_mp"}, {"RightFifthDP", "right_fifth_dp"},
   };
   const auto it = mapping.find(sdk_name);
   return (it != mapping.end()) ? it->second : sdk_name;
@@ -43,48 +66,68 @@ inline std::string xmeSegmentToCanonical(const std::string & sdk_name)
 
 // Finger-tracking segment naming (MANUS gloves via MVN)
 //
-// When finger tracking is enabled we get extra segments in addition
-// to the standard 23 body segments. We have not tested with props.
+// When finger tracking is enabled we get extra segments in addition to the
+// standard 23 body segments.  A hand's block is 20 segments, and it is NOT a
+// uniform 5 x 4 grid of phalanges - it is the MVN hand model, which happens to
+// also total 20:
 //
-// A hand's block is 20 segments: 5 fingers x 4 phalanges, no leading carpus
-// segment (confirmed against a real MANUS glove recording)
+//   carpus (1) + thumb MC/PP/DP (3) + four fingers x MC/PP/MP/DP (16)
+//
+// The names below mirror MVN's own (LeftCarpus, LeftFirstMC, LeftSecondPP, ...)
+// transliterated to canonical snake_case the same way the body segments are,
+// so a TF frame reads e.g. "skeleton_left_first_mc".  Verified against the
+// segment names MVN reports in its scaling datagram and against live TF bone
+// lengths.
+//
+// Note the thumb ("first") has no middle phalange, which is why the block is
+// 20 rather than 21 segments.
 
-inline std::string fingerSegmentName(const std::string & side, int position)
-/// \param side "left" or "right"
-/// \param position 0-based index of the segment within this hand's block, 
-// in the order received (ascending segment ID)
+/// The 20 segments of one hand, in the order MVN streams them.
+inline const std::array<const char *, 20> & handSegmentSuffixes()
 {
-  const int finger = position / 4 + 1;    // 1 (thumb) .. 5 (pinky), per MVN order
-  const int phalange = position % 4 + 1;  // 1 (metacarpal) .. 4 (distal)
-  std::ostringstream oss;
-  oss << side << "_hand_f" << finger << "_p" << phalange;
-  return oss.str();
+  static const std::array<const char *, 20> kSuffixes = {{
+    "carpus",
+    "first_mc", "first_pp", "first_dp",
+    "second_mc", "second_pp", "second_mp", "second_dp",
+    "third_mc", "third_pp", "third_mp", "third_dp",
+    "fourth_mc", "fourth_pp", "fourth_mp", "fourth_dp",
+    "fifth_mc", "fifth_pp", "fifth_mp", "fifth_dp"}};
+  return kSuffixes;
 }
 
-/// Parses a name produced by fingerSegmentName() back into (side, finger,
-/// phalange). Returns false if `seg` doesn't match the finger-segment naming
-/// pattern.
-inline bool parseFingerSegmentName(
-  const std::string & seg, std::string & side, int & finger, int & phalange)
+/// \param side "left" or "right"
+/// \param position 0-based index of the segment within this hand's block,
+///        in the order received (ascending segment ID)
+/// \return e.g. "left_first_mc", or "" if the position is out of range.
+inline std::string fingerSegmentName(const std::string & side, int position)
+{
+  const auto & suffixes = handSegmentSuffixes();
+  if (position < 0 || position >= static_cast<int>(suffixes.size())) {
+    return std::string();
+  }
+  return side + "_" + suffixes[position];
+}
+
+/// Parses a name produced by fingerSegmentName() back into its side and its
+/// 0-based index within the hand block.  Returns false if `seg` is not a hand
+/// segment name.
+inline bool parseFingerSegmentName(const std::string & seg, std::string & side, int & position)
 {
   for (const char * s : {"left", "right"}) {
-    const std::string prefix = std::string(s) + "_hand_";
+    const std::string prefix = std::string(s) + "_";
     if (seg.rfind(prefix, 0) != 0) {
       continue;
     }
-    side = s;
     const std::string suffix = seg.substr(prefix.size());
-    const auto sep = suffix.find("_p");
-    if (suffix.size() < 4 || suffix[0] != 'f' || sep == std::string::npos) {
-      return false;
+    const auto & suffixes = handSegmentSuffixes();
+    for (size_t i = 0; i < suffixes.size(); ++i) {
+      if (suffix == suffixes[i]) {
+        side = s;
+        position = static_cast<int>(i);
+        return true;
+      }
     }
-    try {
-      finger = std::stoi(suffix.substr(1, sep - 1));
-      phalange = std::stoi(suffix.substr(sep + 2));
-    } catch (const std::exception &) {
-      return false;
-    }
-    return true;
+    return false;
   }
   return false;
 }
@@ -110,18 +153,26 @@ inline std::string kineticParent(const std::string & seg)
     return it->second;
   }
 
-  // Dynamic fallback for finger-tracking segments: every phalange parents to
-  // the previous phalange on the same finger, and each finger's first
-  // phalange parents directly to the hand
+  // Dynamic fallback for finger-tracking segments.  The carpus hangs off the
+  // hand, as does each finger's metacarpal; every other bone hangs off the
+  // previous one in its own finger.
   std::string side;
-  int finger = 0, phalange = 0;
-  if (parseFingerSegmentName(seg, side, finger, phalange)) {
-    if (phalange <= 1) {
+  int position = 0;
+  if (parseFingerSegmentName(seg, side, position)) {
+    constexpr int kCarpus = 0;
+    constexpr int kThumbMetacarpal = 1;
+    if (position == kCarpus) {
       return side + "_hand";
     }
-    std::ostringstream oss;
-    oss << side << "_hand_f" << finger << "_p" << (phalange - 1);
-    return oss.str();
+    if (position == kThumbMetacarpal) {
+      return side + "_carpus";
+    }
+    // The index/middle/ring/little metacarpals open each 4-segment group at
+    // positions 4, 8, 12 and 16.
+    if (position % 4 == 0) {
+      return side + "_hand";
+    }
+    return side + "_" + handSegmentSuffixes()[position - 1];
   }
 
   return std::string();

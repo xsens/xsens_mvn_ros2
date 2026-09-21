@@ -23,6 +23,9 @@ generate_parameter_library(xsens_urdf_publisher_parameters
 )
 
 add_executable(xsens_mvn_ros2_urdf_publisher_node src/xsens_urdf_publisher_node.cpp)
+target_include_directories(xsens_mvn_ros2_urdf_publisher_node PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
 target_link_libraries(xsens_mvn_ros2_urdf_publisher_node
   xsens_urdf_publisher_parameters
   ${diagnostic_msgs_TARGETS}
@@ -49,6 +52,9 @@ if(BUILD_TESTING)
 
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_segment_defs test/test_segment_defs.cpp)
+  target_include_directories(test_segment_defs PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
 
   ament_add_gtest(test_scale_utils test/test_scale_utils.cpp)
   target_include_directories(test_scale_utils PRIVATE
