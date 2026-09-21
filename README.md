@@ -15,6 +15,7 @@ ROS2 driver for Xsens motion capture suits. Supports two operational modes: rece
 - [Nodes](#nodes)
 - [Custom Messages](#custom-messages)
 - [Configuration](#configuration)
+- [Multiple Avatars](#multiple-avatars)
 - [URDF and Visualization](#urdf-and-visualization)
 - [Using XML Launch Files](#using-xml-launch-files)
 - [Code Style Guidelines](#code-style-guidelines)
@@ -494,7 +495,7 @@ UDP client for Xsens MVN Studio streaming mode. Lifecycle node.
 **Launch:** `ros2 launch xsens_mvn_ros2 xsens_stream.launch.py`
 **Config:** `src/pkgs/xsens_mvn_ros2_stream/config/xsens_stream_node.yaml`
 
-Key parameters: `udp_port` (default `9763`), `model_name`, `reference_frame`, `update_frequency`.
+Key parameters: `udp_port` (default `9763`), `model_name`, `reference_frame`, `update_frequency`, `avatar_id` (default `0`), `track_all_avatars` (default `false`), `avatar_names`, `avatar_stale_timeout` (default `1.0` s). See [Multiple Avatars](#multiple-avatars).
 
 ### xsens_mvn_ros2_xme_node
 
@@ -601,6 +602,98 @@ awindaChannel: 15   # range 11-25; -1 = auto
 
 ---
 
+## Multiple Avatars
+
+MVN streams **every avatar in the scene to the same UDP port** — each captured
+subject plus every tracked object — distinguished only by an avatar id in the
+datagram header. They share the datagram types: an object arrives as a
+one-segment `PoseQuaternion` packet of exactly the same type as a subject's
+63-segment one.
+
+> **This matters even for a single-suit setup.** If MVN streams more than one
+> avatar and the node is not told which to use, datagrams from the others
+> overwrite the subject's pose and every segment they do not define reads as
+> zero. Enabling object or multi-actor streaming in MVN without setting
+> `avatar_id` will therefore corrupt the skeleton. The default (`avatar_id: 0`)
+> is the captured subject, so single-suit setups are safe out of the box.
+
+### Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `avatar_id` | `0` | The primary avatar. Its data is published on the unprefixed topics and reported through the node's single-avatar API. Datagrams from other avatars are discarded unless `track_all_avatars` is set. |
+| `track_all_avatars` | `false` | Publish every avatar MVN sends, not just `avatar_id`. |
+| `avatar_names` | `[]` | TF prefix per avatar, indexed by avatar id, e.g. `["actor_a", "actor_b", "prop"]`. Ids without an entry fall back to `model_name` for the primary avatar and `<model_name>_<id>` for the rest. |
+| `avatar_stale_timeout` | `1.0` | Seconds without data after which an avatar stops being published, so a dropped avatar does not leave a frozen frame in TF. |
+
+### Topics and frames
+
+The primary avatar keeps the unprefixed topics, so a single-suit setup sees
+exactly what it always did. Every other avatar is namespaced under its name:
+
+| Avatar | Topics | TF frames |
+|--------|--------|-----------|
+| primary (`avatar_id`) | `link_states`, `joint_states`, `com` | `<model_name>_<segment>` |
+| another body | `<name>/link_states`, `<name>/joint_states`, `<name>/com` | `<name>_<segment>` |
+| an object | `<name>/link_states`, `<name>/com` | `<name>_base_link` |
+
+An object advertises no `joint_states`: it has no joints, so the topic could
+only ever carry an empty message. Its pose, velocity and acceleration all
+arrive on `link_states`, whose `LinkState` carries `Pose`, `Twist` and `Accel` —
+MVN streams linear and angular kinematics for objects as well as for bodies.
+(The primary avatar is set up before its kind is known, so it keeps a
+`joint_states` topic even in the unusual case of `avatar_id` naming an object.)
+
+### Bodies and objects
+
+An avatar with fewer segments than the 23-segment body model is treated as a
+rigid object: its segments are named `base_link` (then `link_2`, `link_3`, …)
+and it is published as an absolute pose in `reference_frame`. Objects send no
+joint-angle datagram, so the node does not wait for one.
+
+Avatars are discovered while streaming — no restart is needed when one joins.
+If an avatar's segment count changes (MVN recomposing a scene, an actor
+joining, avatars being renumbered) its model is rebuilt, because the id may now
+mean something entirely different.
+
+`/diagnostics` lists every avatar with its name, kind and data age, and warns
+when one goes stale:
+
+```
+Avatars tracked: 3
+Avatar 0: actor_a (body), last data 5 ms ago
+Avatar 1: actor_b (body), last data 5 ms ago
+Avatar 2: prop (object), last data 5 ms ago
+```
+
+### Example: two actors and an object
+
+```bash
+ros2 run xsens_mvn_ros2_stream xsens_mvn_ros2_stream_node --ros-args \
+  -p track_all_avatars:=true \
+  -p avatar_names:="['actor_a','actor_b','prop']"
+```
+
+Each **body** avatar needs its own URDF publisher, since `robot_description` is
+one topic per model. Run one per actor, using a namespace for the non-primary
+ones (the node uses relative topic names, so this needs no code change):
+
+```bash
+# primary actor -> /robot_description
+ros2 run xsens_mvn_ros2_description xsens_mvn_ros2_urdf_publisher_node \
+  --ros-args -r __node:=urdf_a -p model_name:=actor_a
+
+# second actor -> /actor_b/robot_description
+ros2 run xsens_mvn_ros2_description xsens_mvn_ros2_urdf_publisher_node \
+  --ros-args -r __node:=urdf_b -r __ns:=/actor_b -p model_name:=actor_b
+```
+
+In RViz add one **RobotModel** display per actor, each pointing at that actor's
+description topic. Objects have no URDF — show them with a **TF** or **Axes**
+display on their frame.
+
+---
+
 ## URDF and Visualization
 
 The URDF publisher generates a body-proportioned skeleton by measuring TF distances between adjacent joints and scaling each mesh accordingly:
@@ -614,8 +707,64 @@ The URDF publisher generates a body-proportioned skeleton by measuring TF distan
 
 Scales are clamped to the range [0.5, 2.0]. The static template is `src/pkgs/xsens_mvn_ros2_description/urdf/humanoid.urdf.xacro`; meshes are in `urdf/meshes/neutral/`.
 
+The segment tables that drive generation live in
+`include/xsens_mvn_ros2_description/segment_defs.hpp`, shared by the node and
+its tests so the two cannot drift apart.
+
+### Finger segments (MANUS gloves)
+
+When MVN streams finger tracking, each hand adds a 20-segment block. The block
+is **not** a uniform 5 x 4 grid of phalanges — it is the MVN hand model, which
+happens to also total 20:
+
+```
+carpus (1) + thumb MC/PP/DP (3) + four fingers x MC/PP/MP/DP (16)
+```
+
+Frame names mirror MVN's own, transliterated to snake_case exactly as the body
+segments are, so they line up one-to-one with what MVN reports:
+
+| MVN segment | TF frame (with `model_name: skeleton`) |
+|-------------|----------------------------------------|
+| `LeftCarpus` | `skeleton_left_carpus` |
+| `LeftFirstMC` | `skeleton_left_first_mc` |
+| `LeftFirstPP` | `skeleton_left_first_pp` |
+| `LeftFirstDP` | `skeleton_left_first_dp` |
+| `LeftSecondMC` | `skeleton_left_second_mc` |
+| `LeftSecondPP` | `skeleton_left_second_pp` |
+| … | … |
+
+The thumb (`first`) has no middle phalange — that is why a hand is 20 segments
+and not 21. The carpus sits on the wrist with zero offset from the hand, and
+each finger's metacarpal runs back through the palm.
+
+MVN sends a metacarpal for every finger, but the neutral mesh set ships no
+`SecondMC` or `FifthMC`. Those two links per hand are emitted without geometry:
+the kinematic chain is intact and the palm is covered by the carpus plus the
+third and fourth metacarpal meshes.
+
+Each finger mesh is authored in a shared hand frame whose origin is at
+y = -0.0706 m (left) / +0.0706 m (right); the generated visual origin shifts
+each mesh so its proximal end lands on the joint, and is scaled alongside it.
+
+When a hand's finger block is live, that hand's closed-fist mesh is suppressed —
+it spans the whole hand and would intersect the individual phalanges.
+
 **RViz configuration** — a pre-built workspace is available at:
 `src/pkgs/xsens_mvn_ros2_description/config/xsens_visualization.rviz`
+
+### One URDF publisher per model
+
+The generated URDF takes its `<robot name="...">` from `model_name`. RViz keys
+its RobotModel display off that name, so two avatars sharing a name collide:
+one display renders and the other reports an invalid model until the first is
+switched off. Give every avatar a distinct `model_name`.
+
+`robot_description` is a relative topic name, so running a publisher inside a
+namespace moves it there (`-r __ns:=/actor_b` publishes
+`/actor_b/robot_description`). Two publishers in the same namespace would
+overwrite each other's description. See
+[Multiple Avatars](#multiple-avatars) for a worked two-actor example.
 
 ---
 
@@ -780,8 +929,29 @@ Unit tests use **Google Test** (`ament_cmake_gtest`). The `colcon_defaults.yaml`
 | `xsens_mvn_ros2_common` | `test_skeleton_publisher` | POD types, arm correction functions, frame naming |
 | `xsens_mvn_ros2_common` | `test_skeleton_publisher_node` | TF publishing, relative transforms via lifecycle node (configure + activate) |
 | `xsens_mvn_ros2_stream` | `test_human_data_handler` | `setLink`/`getLink` roundtrip, COM, thread safety |
-| `xsens_mvn_ros2_description` | `test_segment_defs` | No null parents, no duplicates, positive reference lengths |
+| `xsens_mvn_ros2_stream` | `test_stream_client_mock` | `IMotionCaptureSource` contract, including the single-avatar defaults of the multi-avatar API |
+| `xsens_mvn_ros2_stream` | `test_avatar_demux` | Multi-avatar demultiplexing, replayed from a recorded three-avatar MVN scene (see below) |
+| `xsens_mvn_ros2_description` | `test_segment_defs` | Body and finger tables: no null parents, no duplicates, positive reference lengths, finger chain and per-hand mesh correctness |
 | `xsens_mvn_ros2_xme` | Stub only | Hardware-in-the-loop not available without suit |
+
+### The MVN capture fixture
+
+`src/pkgs/xsens_mvn_ros2_stream/test/data/mvn_three_avatars.bin` is a trimmed
+recording of a real MVN stream: two body avatars (63 segments, 28 joints, with
+MANUS finger data) and one tracked object (1 segment), two frames of every
+datagram type each. It is length-prefixed records — a 4-byte big-endian length
+followed by that many bytes of datagram.
+
+`test_avatar_demux` replays it into a real UDP socket, so the demultiplexing is
+exercised against genuine MVN bytes rather than synthesised ones and the tests
+also catch the wire format drifting. It covers avatars staying separated,
+objects building a jointless model, single-avatar mode ignoring the rest, an
+object as the primary avatar, a model rebuilding when its segment count
+changes, and an avatar going quiet.
+
+Re-recording it needs the node stopped (it owns the UDP port) and the scene
+still has to be two bodies plus an object, which `FixtureHoldsThreeAvatars`
+asserts.
 
 ### Running Tests
 
