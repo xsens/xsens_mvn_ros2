@@ -347,6 +347,31 @@ TEST(AvatarDemux, QuietAvatarStopsAdvancingItsTimestamp)
     << "an avatar that stopped sending should not appear fresh";
 }
 
+TEST(AvatarDemux, KeepsWaitingWhenTheStreamStartsLate)
+{
+  // The socket has a 1 s receive timeout.  A stream that starts after that
+  // (MVN not yet streaming when the node comes up, or paused for calibration)
+  // must still be picked up within the 30 s model-build deadline, rather than
+  // the first timeout being mistaken for an empty datagram and ending
+  // acquisition for good.
+  const int port = nextPort();
+  XsensStreamClient client(testLogger(), port, 0, /*track_all_avatars=*/false);
+
+  std::atomic<bool> init_result{false};
+  std::thread init_thread([&]() {init_result = client.init();});
+
+  // Sit through more than two receive timeouts before anything is sent.
+  std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+  EXPECT_FALSE(client.isActive()) << "nothing has been streamed yet";
+
+  Replayer replayer(port, loadFixture());
+  replayer.start();
+  init_thread.join();
+
+  EXPECT_TRUE(init_result) << "init() should succeed once the stream starts";
+  EXPECT_TRUE(waitFor([&]() {return !client.getSegments().empty();}));
+}
+
 int main(int argc, char ** argv)
 {
   ::testing::InitGoogleTest(&argc, argv);

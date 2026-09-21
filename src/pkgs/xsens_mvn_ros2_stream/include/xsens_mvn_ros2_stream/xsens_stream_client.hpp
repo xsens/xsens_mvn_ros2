@@ -102,6 +102,12 @@ private:
   void dataAcquisitionCallback();
   char m_dataBuffer[MAX_MVN_DATAGRAM_SIZE];
   std::atomic<bool> m_clientActive{false};
+  /// Set by the destructor so a thread still waiting for the first datagram
+  /// returns at the next receive timeout instead of running out its deadline.
+  std::atomic<bool> m_stopRequested{false};
+  /// Set when the acquisition thread has returned, so init() can stop waiting
+  /// as soon as the model build fails rather than sitting out its own timeout.
+  std::atomic<bool> m_acquisitionEnded{false};
   mutable std::mutex m_dataMutex;
   std::atomic<int64_t> m_lastDataTimeNs{0};
 
@@ -120,7 +126,15 @@ private:
   QuaternionDatagram waitForQuaternionDatagram();
   JointAnglesDatagram waitForJointAnglesDatagram();
 
-  bool readData();
+  /// Outcome of one readData() call.  A receive timeout is distinct from a
+  /// socket error: the stream may simply be paused (MVN calibrating, or not
+  /// yet streaming), so callers keep waiting through it and only give up on
+  /// a real error.
+  enum class ReadResult { Datagram, Timeout, Error };
+  /// Reads until a datagram for a tracked avatar has been parsed, the socket's
+  /// receive timeout elapses, or the socket fails (which also deactivates the
+  /// client).
+  ReadResult readData();
   void updateJointAngles(AvatarStream & av);
   void updateLinkPoses(AvatarStream & av);
   void updateLinkLinearTwists(AvatarStream & av);

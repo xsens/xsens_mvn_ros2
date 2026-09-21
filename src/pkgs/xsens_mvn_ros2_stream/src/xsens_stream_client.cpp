@@ -53,6 +53,11 @@ bool XsensStreamClient::init()
   // Wait for Xsens data acquisition activation (with timeout)
   auto init_start = std::chrono::steady_clock::now();
   while (!m_clientActive) {
+    if (m_acquisitionEnded) {
+      // The model build failed outright (socket error, malformed datagram);
+      // the thread has already logged why.
+      return false;
+    }
     if (std::chrono::steady_clock::now() - init_start > std::chrono::seconds(30)) {
       RCLCPP_ERROR(
         m_logger,
@@ -86,9 +91,9 @@ void XsensStreamClient::dataAcquisitionCallback()
     m_clientActive = true;
   }
 
-  while (m_clientActive) {
-    if (!readData()) {
-      continue;
+  while (m_clientActive && !m_stopRequested) {
+    if (readData() != ReadResult::Datagram) {
+      continue;  // a timeout is a pause in the stream; an error cleared m_clientActive
     }
     std::lock_guard<std::mutex> lock(m_dataMutex);
     auto it = m_avatars.find(m_lastAvatarId);
@@ -108,13 +113,14 @@ void XsensStreamClient::dataAcquisitionCallback()
     updateLinkAngularTwists(av);
     updateCOM(av);
   }
+  m_acquisitionEnded = true;
 }
 
-bool XsensStreamClient::readData()
+XsensStreamClient::ReadResult XsensStreamClient::readData()
 {
   // Read data from UDP socket.  Datagrams belonging to other avatars are
-  // skipped and the next one read, so a true return always means "a datagram
-  // for our avatar was parsed" and callers keep their existing contract.
+  // skipped and the next one read, so Datagram always means "a datagram for a
+  // tracked avatar was parsed" and callers keep their existing contract.
   while (true) {
     auto read_bytes = m_udpSocket->read(m_dataBuffer, MAX_MVN_DATAGRAM_SIZE);
     if (read_bytes > 0) {
@@ -139,13 +145,13 @@ bool XsensStreamClient::readData()
       }
       m_lastAvatarId = avatar;
       m_lastDataTimeNs = now_ns;
-      return true;
+      return ReadResult::Datagram;
     }
     // Receive timeout (EAGAIN/EWOULDBLOCK) is not a real error — the stream may
-    // have paused briefly (e.g. during calibration in MVN Studio).  Continue the
-    // acquisition loop so data is picked up again once the stream resumes.
+    // have paused briefly (e.g. during calibration in MVN Studio) or not have
+    // started yet.  Callers keep waiting so data is picked up when it resumes.
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      return false;
+      return ReadResult::Timeout;
     }
     RCLCPP_ERROR(
       m_logger,
@@ -154,7 +160,7 @@ bool XsensStreamClient::readData()
       "(2) Has the network connection been interrupted?",
       strerror(errno));
     m_clientActive = false;
-    return false;
+    return ReadResult::Error;
   }
 }
 
@@ -389,6 +395,9 @@ QuaternionDatagram XsensStreamClient::waitForQuaternionDatagram()
         return *datagram;
       }
     }
+    if (m_stopRequested) {
+      return QuaternionDatagram();
+    }
     if (std::chrono::steady_clock::now() > deadline) {
       RCLCPP_ERROR(
         m_logger,
@@ -399,7 +408,9 @@ QuaternionDatagram XsensStreamClient::waitForQuaternionDatagram()
         m_udpPort);
       return QuaternionDatagram();
     }
-    if (!readData()) {
+    // A receive timeout just means nothing arrived in the last second; keep
+    // waiting until the deadline.  Only a socket error ends the wait early.
+    if (readData() == ReadResult::Error) {
       return QuaternionDatagram();
     }
   }
@@ -417,6 +428,9 @@ JointAnglesDatagram XsensStreamClient::waitForJointAnglesDatagram()
         return *datagram;
       }
     }
+    if (m_stopRequested) {
+      return JointAnglesDatagram();
+    }
     if (std::chrono::steady_clock::now() > deadline) {
       RCLCPP_ERROR(
         m_logger,
@@ -428,7 +442,7 @@ JointAnglesDatagram XsensStreamClient::waitForJointAnglesDatagram()
         m_udpPort);
       return JointAnglesDatagram();
     }
-    if (!readData()) {
+    if (readData() == ReadResult::Error) {
       return JointAnglesDatagram();
     }
   }
@@ -715,6 +729,9 @@ std::optional<Eigen::Vector3d> XsensStreamClient::getCOM() const
 
 XsensStreamClient::~XsensStreamClient()
 {
+  // The thread may still be waiting for its first datagram; the stop flag
+  // makes that wait return at the next 1 s receive timeout.
+  m_stopRequested = true;
   m_clientActive = false;
   if (m_dataAcquisitionThread.joinable()) {
     m_dataAcquisitionThread.join();
