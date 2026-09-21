@@ -7,12 +7,21 @@
     <arg name="launch_rviz" default="true"/>
     <arg name="launch_description" default="true"/>
     <arg name="model_name" default="skeleton"/>
+    <arg name="reference_frame" default="world"/>
+    <arg name="udp_port" default="9763"/>
+    <!-- Multi-avatar: see the Python launch for avatar_names, which needs a list -->
+    <arg name="avatar_id" default="0"/>
+    <arg name="track_all_avatars" default="false"/>
     <arg name="rviz_config_file" default="$(find-pkg-share xsens_mvn_ros2_description)/config/xsens_visualization.rviz"/>
 
     <!-- Launch the node -->
     <node pkg="xsens_mvn_ros2_stream" exec="xsens_mvn_ros2_stream_node" output="screen">
         <param from="$(find-pkg-share xsens_mvn_ros2_stream)/config/xsens_stream_node.yaml"/>
         <param name="model_name" value="$(var model_name)"/>
+        <param name="reference_frame" value="$(var reference_frame)"/>
+        <param name="udp_port" value="$(var udp_port)"/>
+        <param name="avatar_id" value="$(var avatar_id)"/>
+        <param name="track_all_avatars" value="$(var track_all_avatars)"/>
     </node>
 
     <!-- Launch RViz -->

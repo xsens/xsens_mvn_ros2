@@ -17,7 +17,7 @@ ROS2 driver for Xsens motion capture suits. Supports two operational modes: rece
 - [Configuration](#configuration)
 - [Multiple Avatars](#multiple-avatars)
 - [URDF and Visualization](#urdf-and-visualization)
-- [Using XML Launch Files](#using-xml-launch-files)
+- [Launch Files](#launch-files)
 - [Code Style Guidelines](#code-style-guidelines)
 - [Testing](#testing)
 - [Contributing](#contributing)
@@ -48,16 +48,15 @@ xsens_mvn_ros2/                      <- workspace root
 ├── src/
 │   ├── pkgs/
 │   │   ├── xsens_mvn_msgs/          <- custom ROS2 message/service/action definitions
-│   │   ├── xsens_mvn_ros2/          <- meta-package (launch files, config, exec_depend on all below)
+│   │   ├── xsens_mvn_ros2/          <- meta-package: top-level launch files, exec_depend on all below
 │   │   ├── xsens_mvn_ros2_common/   <- shared library: SkeletonPublisher, xsens_model, IMotionCaptureSource
-│   │   ├── xsens_mvn_ros2_stream/   <- stream node: UDP client for MVN Studio
+│   │   ├── xsens_mvn_ros2_stream/   <- stream node: UDP client for MVN Studio (multi-avatar aware)
 │   │   ├── xsens_mvn_ros2_xme/      <- XME node: direct hardware via XME SDK
-│   │   └── xsens_mvn_ros2_description/ <- URDF publisher node, meshes, xacro, rviz config
+│   │   └── xsens_mvn_ros2_description/ <- URDF publisher node, RViz launch, meshes/neutral, xacro, rviz config
 │   └── deps/
 │       ├── xsens_mvn_sdk/            <- custom MVN UDP protocol parser (ament package)
 │       └── xsens_xme_sdk/            <- vendored XME SDK binaries and headers
-├── examples/
-│   └── xme_cpp/                      <- XME SDK example projects (outside colcon workspace)
+├── Puppet.mvn / Puppet.mvna          <- example MVN calibration files
 └── colcon_defaults.yaml              <- workspace build defaults
 ```
 
@@ -181,6 +180,15 @@ The Python launch file automatically configures and activates the lifecycle node
 ```bash
 ros2 launch xsens_mvn_ros2 xsens_stream.launch.py launch_rviz:=false launch_description:=false
 ```
+
+If MVN streams more than one avatar (a second suit, or a tracked object), name them and the launch file brings up a URDF publisher and an RViz model per actor:
+
+```bash
+ros2 launch xsens_mvn_ros2 xsens_stream.launch.py \
+  track_all_avatars:=true avatar_names:="[actor_a, actor_b, prop]" object_avatars:="[prop]"
+```
+
+See [Multiple Avatars](#multiple-avatars) for what this does and why it matters even with a single suit.
 
 ### XME Mode (Direct Hardware)
 
@@ -418,7 +426,7 @@ XsensUrdfPublisherNode
 
 ### Skeleton Definition
 
-The driver uses a 24-segment humanoid model defined in `xsens_model.hpp`:
+The driver uses the 23-segment MVN body model defined in `xsens_model.hpp`, plus an optional 20-segment finger block per hand when MANUS gloves are streamed (see [Finger segments](#finger-segments-manus-gloves)):
 
 ```
 pelvis
@@ -495,7 +503,7 @@ UDP client for Xsens MVN Studio streaming mode. Lifecycle node.
 **Launch:** `ros2 launch xsens_mvn_ros2 xsens_stream.launch.py`
 **Config:** `src/pkgs/xsens_mvn_ros2_stream/config/xsens_stream_node.yaml`
 
-Key parameters: `udp_port` (default `9763`), `model_name`, `reference_frame`, `update_frequency`, `avatar_id` (default `0`), `track_all_avatars` (default `false`), `avatar_names`, `avatar_stale_timeout` (default `1.0` s). See [Multiple Avatars](#multiple-avatars).
+Key parameters: `udp_port` (default `9763`), `model_name`, `reference_frame`, `update_frequency`, `avatar_id` (default `0`), `track_all_avatars` (default `false`), `avatar_names`, `avatar_stale_timeout` (default `1.0` s). All but `update_frequency` and `avatar_stale_timeout` are also launch arguments, so a multi-suit scene needs no config-file edits. See [Multiple Avatars](#multiple-avatars).
 
 ### xsens_mvn_ros2_xme_node
 
@@ -510,10 +518,12 @@ Key parameters: `awindaChannel`, `sampleRate` (default `240 Hz`), `biomechanical
 
 Reads live TF data to measure subject body proportions and publishes a scaled URDF to `/robot_description`. Lifecycle node.
 
-**Launch:** Included automatically in `xsens_stream.launch.py` and `xsens_xme.launch.py` when `launch_description:=true`.
+**Launch:** Included automatically in `xsens_stream.launch.py` and `xsens_xme.launch.py` when `launch_description:=true` (one instance per body avatar in a multi-avatar scene).
 **Config:** `src/pkgs/xsens_mvn_ros2_description/config/xsens_urdf_publisher_node.yaml`
 
 Service `~/republish_urdf` (`std_srvs/Trigger`) forces immediate re-publication. Rejects requests when the node is not active.
+
+The same package provides `rviz.launch.py`, which starts RViz with one RobotModel display per `robot_description` topic it is given. The top-level launch files use it so RViz follows the `namespace` argument and shows every actor.
 
 ---
 
@@ -578,16 +588,16 @@ Edit `src/pkgs/xsens_mvn_ros2_xme/config/body_dimensions.yaml` to match your sub
     bodyDimension:
       bodyHeight:      1.85
       footSize:        0.31
-      shoulderHeight:  1.44
+      shoulderHeight:  1.4434
       shoulderWidth:   0.38
-      elbowSpan:       0.90
-      wristSpan:       1.50
-      armSpan:         1.78
-      hipHeight:       1.07
-      hipWidth:        0.32
-      kneeHeight:      0.59
-      ankleHeight:     0.13
-      shoeSoleHeight:  0.00
+      elbowSpan:       0.94
+      wristSpan:       1.43
+      armSpan:         1.796
+      hipHeight:       0.8744
+      hipWidth:        0.24
+      kneeHeight:      0.4861
+      ankleHeight:     0.08
+      shoeSoleHeight:  0.0
 ```
 
 These values are used by the XME node for biomechanical solving. The URDF publisher derives body proportions independently from live TF data.
@@ -669,28 +679,54 @@ Avatar 2: prop (object), last data 5 ms ago
 ### Example: two actors and an object
 
 ```bash
+ros2 launch xsens_mvn_ros2 xsens_stream.launch.py \
+  track_all_avatars:=true \
+  avatar_names:="[actor_a, actor_b, prop]" \
+  object_avatars:="[prop]"
+```
+
+This one command brings up everything the scene needs:
+
+| What | Where |
+|------|-------|
+| Stream node | `/xsens_mvn_ros2_stream_node`, publishing all three avatars |
+| URDF publisher for `actor_a` (primary, id 0) | `/xsens_urdf_publisher` -> `/robot_description` |
+| URDF publisher for `actor_b` | `/actor_b/xsens_urdf_publisher` -> `/actor_b/robot_description` |
+| RViz | one **RobotModel** display per actor, on the topics above |
+
+Each **body** avatar needs its own URDF publisher, since `robot_description` is
+one topic per model, so the launch file starts one per *named* body: the
+primary avatar in the launch `namespace`, every other body in a sub-namespace
+named after it. That is the same layout the stream node uses for its topics, so
+`/actor_b/link_states` and `/actor_b/robot_description` sit side by side.
+
+`object_avatars` lists which names are tracked objects. An object has no pelvis
+frame, so a URDF publisher started for it would wait forever and report an
+error in `/diagnostics`; naming it here skips the publisher and the RobotModel
+display. Objects are still published on their own topics and TF frames — show
+them with a **TF** or **Axes** display in RViz.
+
+Two things to keep in mind:
+
+- **Name every body you want a URDF for.** An avatar without an
+  `avatar_names` entry is still published (as `<model_name>_<id>`), but the
+  launch file cannot start a URDF publisher for an id it does not know about.
+- **`avatar_names` overrides `model_name` for the primary avatar.** With
+  `avatar_names:="[actor_a, ...]"` the primary frames are `actor_a_*`, and the
+  launch file points its URDF publisher at `actor_a` accordingly. When you run
+  the nodes by hand, keep the two in sync yourself.
+
+The same arguments exist on `xsens_mvn_ros2_stream`'s own `xsens_stream.launch.py`
+if you only want the node, and can be given to the node directly:
+
+```bash
 ros2 run xsens_mvn_ros2_stream xsens_mvn_ros2_stream_node --ros-args \
   -p track_all_avatars:=true \
   -p avatar_names:="['actor_a','actor_b','prop']"
 ```
 
-Each **body** avatar needs its own URDF publisher, since `robot_description` is
-one topic per model. Run one per actor, using a namespace for the non-primary
-ones (the node uses relative topic names, so this needs no code change):
-
-```bash
-# primary actor -> /robot_description
-ros2 run xsens_mvn_ros2_description xsens_mvn_ros2_urdf_publisher_node \
-  --ros-args -r __node:=urdf_a -p model_name:=actor_a
-
-# second actor -> /actor_b/robot_description
-ros2 run xsens_mvn_ros2_description xsens_mvn_ros2_urdf_publisher_node \
-  --ros-args -r __node:=urdf_b -r __ns:=/actor_b -p model_name:=actor_b
-```
-
-In RViz add one **RobotModel** display per actor, each pointing at that actor's
-description topic. Objects have no URDF — show them with a **TF** or **Axes**
-display on their frame.
+With `auto_activate:=false` there is one URDF publisher per body to transition,
+e.g. `/xsens_urdf_publisher` and `/actor_b/xsens_urdf_publisher`.
 
 ---
 
@@ -705,7 +741,7 @@ The URDF publisher generates a body-proportioned skeleton by measuring TF distan
 | Arms / shoulders | Y | TF segment length / neutral mesh length |
 | Feet | Uniform | Ankle-to-ball-of-foot distance / 0.1526 m |
 
-Scales are clamped to the range [0.5, 2.0]. The static template is `src/pkgs/xsens_mvn_ros2_description/urdf/humanoid.urdf.xacro`; meshes are in `urdf/meshes/neutral/`.
+Scales are clamped to the range [0.5, 2.0]. The static template is `src/pkgs/xsens_mvn_ros2_description/urdf/humanoid.urdf.xacro`; the meshes the generated URDF references are in `src/pkgs/xsens_mvn_ros2_description/meshes/neutral/`.
 
 The segment tables that drive generation live in
 `include/xsens_mvn_ros2_description/segment_defs.hpp`, shared by the node and
@@ -763,16 +799,42 @@ switched off. Give every avatar a distinct `model_name`.
 `robot_description` is a relative topic name, so running a publisher inside a
 namespace moves it there (`-r __ns:=/actor_b` publishes
 `/actor_b/robot_description`). Two publishers in the same namespace would
-overwrite each other's description. See
-[Multiple Avatars](#multiple-avatars) for a worked two-actor example.
+overwrite each other's description. The top-level `xsens_stream.launch.py`
+does this namespacing for you; see [Multiple Avatars](#multiple-avatars) for a
+worked two-actor example.
+
+### RViz follows the topics
+
+`xsens_mvn_ros2_description/launch/rviz.launch.py` starts RViz from a config
+file and rewrites its **RobotModel** display into one display per
+`robot_description` topic it is given (`robot_description_topics:="[/robot_description, /actor_b/robot_description]"`).
+The top-level launch files use it, so RViz shows the model of a namespaced
+driver and every actor of a multi-avatar scene without manual display setup.
+The stock config, or one you pass with `rviz_config_file`, is left untouched
+on disk; the rewritten copy is a temporary file. A custom config without a
+RobotModel display is used as is.
 
 ---
 
-## Using XML Launch Files
+## Launch Files
+
+### Python Launch Files
+
+The Python launch files are the primary entry point. They configure and activate the lifecycle nodes for you (unless `auto_activate:=false`) and handle the multi-avatar bring-up.
+
+| Package | File | Description |
+|---------|------|-------------|
+| `xsens_mvn_ros2` (meta) | `xsens_stream.launch.py` | Stream node + a URDF publisher per body avatar + RViz showing them all |
+| `xsens_mvn_ros2` (meta) | `xsens_xme.launch.py` | XME node + URDF publisher + RViz |
+| `xsens_mvn_ros2` (meta) | `description.launch.py` | Wrapper that includes the description package launch |
+| `xsens_mvn_ros2_stream` | `xsens_stream.launch.py` | Stream node only, with all avatar parameters as arguments |
+| `xsens_mvn_ros2_xme` | `xsens_xme.launch.py` | XME node only |
+| `xsens_mvn_ros2_description` | `description.launch.py` | One URDF publisher |
+| `xsens_mvn_ros2_description` | `rviz.launch.py` | RViz with one RobotModel display per `robot_description` topic |
+
+### XML Launch Files
 
 The original XML launch files are still included alongside the Python ones. They start the lifecycle nodes in the **unconfigured** state, so you must manage state transitions manually. This is useful for debugging, staged bringup, or integration into a larger launch system that manages lifecycle externally.
-
-### Available XML Launch Files
 
 | Package | File | Description |
 |---------|------|-------------|
@@ -782,6 +844,8 @@ The original XML launch files are still included alongside the Python ones. They
 | `xsens_mvn_ros2` (meta) | `xsens_stream.launch.xml` | Wrapper that includes the stream package launch |
 | `xsens_mvn_ros2` (meta) | `xsens_xme.launch.xml` | Wrapper that includes the XME package launch |
 | `xsens_mvn_ros2` (meta) | `description.launch.xml` | Wrapper that includes the description package launch |
+
+The XML files start one URDF publisher and one RViz RobotModel on `/robot_description`. Multi-avatar bring-up (`avatar_names`, `object_avatars`, per-actor URDF publishers and RViz displays) is only in the Python launch files.
 
 ### Example: Stream Mode with XML
 
@@ -827,19 +891,34 @@ ros2 lifecycle set /xsens_mvn_ros2_stream_node activate
 
 ### Python Launch Arguments
 
+Run `ros2 launch xsens_mvn_ros2 xsens_stream.launch.py -s` for the live list. Both top-level launches take:
+
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `auto_activate` | `true` | Automatically configure and activate all lifecycle nodes on startup. Set to `false` for manual lifecycle control. |
-| `namespace` | `""` | ROS2 namespace prefix for all nodes, topics, and services. Useful for multi-suit setups. |
-| `model_name` | `"skeleton"` | Passed to node and URDF publisher |
+| `namespace` | `""` | ROS2 namespace prefix for all nodes, topics, and services. RViz follows it. |
+| `model_name` | `"skeleton"` | TF prefix of the (primary) avatar; passed to node and URDF publisher |
 | `launch_rviz` | `true` | Whether to start RViz |
-| `launch_description` | `true` | Whether to start the URDF publisher node |
+| `launch_description` | `true` | Whether to start the URDF publisher node(s) |
 | `discovery_range` | `LOCALHOST` | DDS discovery scope |
-| `rviz_config_file` | built-in | Path to a custom RViz config |
+| `rviz_config_file` | built-in | Path to a custom RViz config; its RobotModel display is repeated per actor |
+
+`xsens_stream.launch.py` additionally takes the stream-node parameters:
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `udp_port` | `9763` | UDP port MVN streams to |
+| `reference_frame` | `"world"` | Root TF frame |
+| `avatar_id` | `0` | MVN avatar published on the unprefixed topics |
+| `track_all_avatars` | `false` | Publish every avatar MVN streams |
+| `avatar_names` | `[]` | TF prefix per avatar id, e.g. `[actor_a, actor_b, prop]`; a URDF publisher and RViz model is started per named body |
+| `object_avatars` | `[]` | Entries of `avatar_names` that are tracked objects, so they get no URDF publisher or RViz model |
+
+List arguments accept YAML (`"[a, b]"`) or a comma-separated string (`"a,b"`).
 
 ### XML Launch Arguments
 
-The XML launches accept the same arguments as the Python versions, except `auto_activate` and `namespace` (XML launches always start in the unconfigured state with no namespace):
+The XML launches accept the scalar arguments of the Python versions, except `auto_activate` and `namespace` (XML launches always start in the unconfigured state with no namespace):
 
 | Argument | Default | Description |
 |----------|---------|-------------|
@@ -848,6 +927,7 @@ The XML launches accept the same arguments as the Python versions, except `auto_
 | `launch_description` | `true` | Whether to start the URDF publisher node |
 | `discovery_range` | `LOCALHOST` | DDS discovery scope |
 | `rviz_config_file` | built-in | Path to a custom RViz config |
+| `udp_port`, `reference_frame`, `avatar_id`, `track_all_avatars` | as above | Stream launch only. `avatar_names` and `object_avatars` are Python-only. |
 
 ---
 
@@ -932,6 +1012,7 @@ Unit tests use **Google Test** (`ament_cmake_gtest`). The `colcon_defaults.yaml`
 | `xsens_mvn_ros2_stream` | `test_stream_client_mock` | `IMotionCaptureSource` contract, including the single-avatar defaults of the multi-avatar API |
 | `xsens_mvn_ros2_stream` | `test_avatar_demux` | Multi-avatar demultiplexing, replayed from a recorded three-avatar MVN scene (see below) |
 | `xsens_mvn_ros2_description` | `test_segment_defs` | Body and finger tables: no null parents, no duplicates, positive reference lengths, finger chain and per-hand mesh correctness |
+| `xsens_mvn_ros2_description` | `test_scale_utils` | Scale-factor computation and the [0.5, 2.0] clamp |
 | `xsens_mvn_ros2_xme` | Stub only | Hardware-in-the-loop not available without suit |
 
 ### The MVN capture fixture
@@ -947,7 +1028,8 @@ exercised against genuine MVN bytes rather than synthesised ones and the tests
 also catch the wire format drifting. It covers avatars staying separated,
 objects building a jointless model, single-avatar mode ignoring the rest, an
 object as the primary avatar, a model rebuilding when its segment count
-changes, and an avatar going quiet.
+changes, an avatar going quiet, and a stream that only starts a few seconds
+after the client (receive timeouts must not be mistaken for an empty datagram).
 
 Re-recording it needs the node stopped (it owns the UDP port) and the scene
 still has to be two bodies plus an object, which `FixtureHoldsThreeAvatars`

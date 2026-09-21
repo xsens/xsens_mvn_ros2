@@ -2,9 +2,9 @@
 
 This document provides the complete parameter, topic, service, and action reference for all nodes in the `xsens_mvn_ros2` package.
 
-All nodes are **ROS2 managed (lifecycle) nodes**. The Python launch files (`.launch.py`) automatically configure and activate each node at startup. For manual lifecycle control, see the [Lifecycle Management](../../../../README.md#lifecycle-management) section in the workspace README.
+All nodes are **ROS2 managed (lifecycle) nodes**. The Python launch files (`.launch.py`) automatically configure and activate each node at startup. For manual lifecycle control, see the [Lifecycle Management](../../../README.md#lifecycle-management) section in the workspace README.
 
-For installation and architecture, see the [workspace README](../../../../README.md).
+For installation, architecture and the multi-avatar walkthrough, see the [workspace README](../../../README.md).
 
 ---
 
@@ -33,31 +33,39 @@ Configure Xsens MVN Studio to stream data via UDP to the host running this node.
 
 | Topic | Type | Description |
 |-------|------|-------------|
-| `~/joint_states` | `sensor_msgs/msg/JointState` | XYZ Euler angles (radians) for all 23 joints |
-| `~/link_states` | `xsens_mvn_msgs/msg/LinkStateArray` | Full kinematic state (pose, twist, accel) for all 24 body segments |
+| `~/joint_states` | `sensor_msgs/msg/JointState` | XYZ Euler angles (radians) for every joint MVN streams (22 body joints plus MVN's ergonomic extras) |
+| `~/link_states` | `xsens_mvn_msgs/msg/LinkStateArray` | Full kinematic state (pose, twist, accel) for the 23 body segments, plus 20 finger segments per hand when MANUS gloves are streamed |
 | `~/com` | `geometry_msgs/msg/Point` | Centre of mass position in the reference frame |
-| `/tf` | `tf2_msgs/msg/TFMessage` | TF transforms for all body segments (relative parent→child) |
+| `/tf` | `tf2_msgs/msg/TFMessage` | TF transforms for all segments (relative parent→child), frames named `<model_name>_<segment>` |
+
+These are the topics of the **primary** avatar (`avatar_id`). With `track_all_avatars` every other avatar gets the same set under its own name, e.g. `~/actor_b/link_states`, `~/actor_b/joint_states`, `~/actor_b/com`, with TF frames `actor_b_<segment>`. A tracked object publishes `link_states` and `com` only (frame `<name>_base_link`). See [Multiple Avatars](../../../README.md#multiple-avatars).
 
 ### Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `model_name` | string | `"skeleton"` | Prefix applied to all frame and joint names |
+| `model_name` | string | `"skeleton"` | TF prefix of the primary avatar (overridden by its `avatar_names` entry, if any) |
 | `reference_frame` | string | `"world"` | Root TF frame for the kinematic tree |
 | `udp_port` | int | `9763` | UDP port to listen on for MVN Studio data |
 | `update_frequency` | int | `100` | Publishing rate in Hz |
+| `avatar_id` | int | `0` | MVN avatar published on the unprefixed topics; others are discarded unless `track_all_avatars` |
+| `track_all_avatars` | bool | `false` | Publish every avatar MVN streams |
+| `avatar_names` | string[] | `[]` | TF prefix per avatar id, e.g. `["actor_a", "actor_b", "prop"]`. Unnamed ids fall back to `model_name` (primary) or `<model_name>_<id>` |
+| `avatar_stale_timeout` | double | `1.0` | Seconds without data before an avatar stops being published |
 
 ### Launch Arguments
 
+`xsens_mvn_ros2_stream`'s own `xsens_stream.launch.py` starts only the node and takes `namespace`, `auto_activate`, `model_name`, `reference_frame`, `udp_port`, `avatar_id`, `track_all_avatars` and `avatar_names`. The top-level `xsens_mvn_ros2` launch adds:
+
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `auto_activate` | `true` | Automatically configure and activate all lifecycle nodes on startup. Set to `false` for manual lifecycle control. |
-| `namespace` | `""` | ROS2 namespace prefix for all nodes, topics, and services |
-| `model_name` | `"skeleton"` | Passed to node and URDF publisher |
-| `launch_rviz` | `true` | Whether to start RViz |
-| `launch_description` | `true` | Whether to start the URDF publisher node |
+| `launch_rviz` | `true` | Whether to start RViz (one RobotModel display per body avatar) |
+| `launch_description` | `true` | Whether to start a URDF publisher per body avatar |
+| `object_avatars` | `[]` | Entries of `avatar_names` that are tracked objects; they get no URDF publisher or RViz model |
 | `discovery_range` | `LOCALHOST` | DDS discovery scope |
 | `rviz_config_file` | built-in | Path to a custom RViz config |
+
+List arguments accept YAML (`"[a, b]"`) or a comma-separated string.
 
 ---
 
@@ -170,18 +178,18 @@ All values in **metres**. Used for biomechanical solving. Edit `config/body_dime
 |-----------|------|---------|-------------|
 | `bodyDimension.bodyHeight` | double | `1.80` | Total standing height |
 | `bodyDimension.footSize` | double | `0.26` | Foot length |
-| `bodyDimension.shoulderHeight` | double | `1.60` | Height to top of shoulders |
-| `bodyDimension.shoulderWidth` | double | `0.45` | Distance between shoulders |
-| `bodyDimension.elbowSpan` | double | `0.95` | Arm span to elbows |
-| `bodyDimension.wristSpan` | double | `1.55` | Arm span to wrists |
+| `bodyDimension.shoulderHeight` | double | `1.45` | Height to top of shoulders |
+| `bodyDimension.shoulderWidth` | double | `0.38` | Distance between shoulders |
+| `bodyDimension.elbowSpan` | double | `0.94` | Arm span to elbows |
+| `bodyDimension.wristSpan` | double | `1.43` | Arm span to wrists |
 | `bodyDimension.armSpan` | double | `1.80` | Total arm span (fingertip to fingertip) |
-| `bodyDimension.hipHeight` | double | `1.07` | Height to hip joints |
-| `bodyDimension.hipWidth` | double | `0.32` | Distance between hip joints |
-| `bodyDimension.kneeHeight` | double | `0.59` | Height to knees |
-| `bodyDimension.ankleHeight` | double | `0.13` | Height to ankles |
-| `bodyDimension.shoeSoleHeight` | double | `0.00` | Shoe sole thickness (added to ankle height) |
+| `bodyDimension.hipHeight` | double | `0.87` | Height to hip joints |
+| `bodyDimension.hipWidth` | double | `0.24` | Distance between hip joints |
+| `bodyDimension.kneeHeight` | double | `0.49` | Height to knees |
+| `bodyDimension.ankleHeight` | double | `0.08` | Height to ankles |
+| `bodyDimension.shoeSoleHeight` | double | `0.0` | Shoe sole thickness (added to ankle height) |
 
-> The default values match the `Puppet.mvn` example file included in the repository.
+> These are the built-in defaults from `body_dimensions_parameters.yaml`. The shipped `config/body_dimensions.yaml` overrides them with one example subject's measurements; edit that file for yours.
 
 Body dimensions can also be changed at runtime on a running node using `ros2 param set`:
 
@@ -245,7 +253,7 @@ ros2 run rqt_robot_monitor rqt_robot_monitor
 
 Dynamically generates a body-proportioned URDF for the skeleton by measuring distances between TF frames published by the stream or XME node, then scaling each mesh segment accordingly. Implemented as a lifecycle node.
 
-The URDF is published on `/robot_description` with **transient-local QoS** so that late-joining subscribers (such as RViz) receive it immediately.
+The URDF is published on `robot_description` (relative, so `/robot_description` or `/<namespace>/robot_description`) with **transient-local QoS** so that late-joining subscribers (such as RViz) receive it immediately. Each body avatar needs its own instance; the top-level `xsens_stream.launch.py` starts one per named body, the non-primary ones in a namespace named after the avatar (`/actor_b/xsens_urdf_publisher` -> `/actor_b/robot_description`).
 
 > **Lifecycle note:** The `~/republish_urdf` service rejects requests when the node is not in the `active` state. Scale computation and URDF publishing only happen while the node is active.
 
@@ -255,15 +263,24 @@ Launched automatically by both `xsens_stream.launch.py` and `xsens_xme.launch.py
 
 ```bash
 ros2 launch xsens_mvn_ros2 description.launch.py model_name:=skeleton
+# a second actor, alongside the first
+ros2 launch xsens_mvn_ros2 description.launch.py model_name:=actor_b namespace:=actor_b
 ```
 
 **Config file:** `config/xsens_urdf_publisher_node.yaml`
+
+**RViz:** `xsens_mvn_ros2_description/launch/rviz.launch.py` starts RViz with one RobotModel display per description topic:
+
+```bash
+ros2 launch xsens_mvn_ros2_description rviz.launch.py \
+  robot_description_topics:="[/robot_description, /actor_b/robot_description]"
+```
 
 ### Published Topics
 
 | Topic | Type | QoS | Description |
 |-------|------|-----|-------------|
-| `/robot_description` | `std_msgs/msg/String` | Transient-local | Full URDF XML of the scaled skeleton |
+| `robot_description` | `std_msgs/msg/String` | Transient-local | Full URDF XML of the scaled skeleton; `<robot name>` is `model_name` |
 
 ### Services
 
@@ -280,9 +297,10 @@ ros2 service call /xsens_urdf_publisher/republish_urdf std_srvs/srv/Trigger
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `model_name` | string | `"skeleton"` | Must match the `model_name` of the running Xsens node |
+| `model_name` | string | `"skeleton"` | Must match the TF prefix of the avatar to describe (the Xsens node's `model_name`, or its `avatar_names` entry) |
 | `republish_period` | double | `10.0` | Interval in seconds for periodic re-publication after the first successful publish |
-| `bodyDimension.hipWidth` | double | `0.32` | Used to scale the pelvis mesh width |
+
+Body proportions are measured from TF, not from parameters: the pelvis width comes from the hip-joint distance in TF, so the node takes no `bodyDimension.*` parameters.
 
 ### Scaling Algorithm
 
