@@ -10,6 +10,10 @@ build:
   - -DAMENT_CMAKE_PYTEST_WITH_COVERAGE=ON
   - -DCMAKE_EXE_LINKER_FLAGS=-Wl,--compress-debug-sections=zlib
   - -DCMAKE_SHARED_LINKER_FLAGS=-Wl,--compress-debug-sections=zlib
+  # Pin the ROS Python: a user-local interpreter earlier on PATH (e.g. uv's
+  # standalone CPython in ~/.local/bin) is picked up by FindPython3 and lacks
+  # catkin_pkg, which fails ament_package() at configure time.
+  - -DPython3_EXECUTABLE=/usr/bin/python3
   - --no-warn-unused-cli
   symlink-install: true
   packages-up-to: &packages-up-to
