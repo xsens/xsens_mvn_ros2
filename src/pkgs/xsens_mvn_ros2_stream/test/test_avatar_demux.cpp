@@ -17,12 +17,15 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <xsens_mvn_sdk/quaterniondatagram.h>  // cpplint files a .h header here
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -143,6 +146,138 @@ int messageTypeOf(const std::vector<char> & d)
   return std::stoi(std::string(d.data() + 4, 2), nullptr, 16);
 }
 
+// ---- Header layout of an MVN datagram (see xsens_mvn_sdk/datagram.cpp) ----
+constexpr size_t kHeaderSize = 24;
+constexpr size_t kItemCountOffset = 11;
+constexpr size_t kBodyCountOffset = 17;
+constexpr size_t kPropCountOffset = 18;
+constexpr size_t kFingerCountOffset = 19;
+
+/// Per-item payload size of the three per-segment datagram types, or 0 for
+/// types that are not laid out per segment.
+size_t itemSizeOf(const std::vector<char> & d)
+{
+  switch (messageTypeOf(d)) {
+    case 0x02: return 32;   // PoseQuaternion: id, pos[3], quat[4]
+    case 0x21: return 40;   // LinearSegmentKinematics: id, pos[3], vel[3], acc[3]
+    case 0x22: return 44;   // AngularSegmentKinematics: id, quat[4], vel[3], acc[3]
+    default: return 0;
+  }
+}
+
+void putInt32(std::vector<char> & d, size_t at, int32_t v)
+{
+  const uint32_t u = static_cast<uint32_t>(v);
+  d[at] = static_cast<char>(u >> 24);
+  d[at + 1] = static_cast<char>(u >> 16);
+  d[at + 2] = static_cast<char>(u >> 8);
+  d[at + 3] = static_cast<char>(u);
+}
+
+int32_t getInt32(const std::vector<char> & d, size_t at)
+{
+  return static_cast<int32_t>(
+    (static_cast<uint32_t>(static_cast<unsigned char>(d[at])) << 24) |
+    (static_cast<uint32_t>(static_cast<unsigned char>(d[at + 1])) << 16) |
+    (static_cast<uint32_t>(static_cast<unsigned char>(d[at + 2])) << 8) |
+    static_cast<uint32_t>(static_cast<unsigned char>(d[at + 3])));
+}
+
+void putFloat(std::vector<char> & d, size_t at, float v)
+{
+  uint32_t u;
+  std::memcpy(&u, &v, sizeof u);
+  putInt32(d, at, static_cast<int32_t>(u));
+}
+
+/// Position written into every injected prop segment, so a test can tell a
+/// prop's data apart from the body's.
+constexpr float kPropPosition[3] = {1.5f, -2.5f, 0.75f};
+
+/// Rewrites a per-segment datagram the way MVN lays it out when the actor
+/// holds @p props props: the new segments go right after the 23 body segments,
+/// the finger segments that follow are renumbered, and the header's item and
+/// prop counts are updated.  Datagram types without per-segment items are
+/// returned untouched.
+std::vector<char> withProps(std::vector<char> d, int props)
+{
+  const size_t item_size = itemSizeOf(d);
+  if (item_size == 0) {
+    return d;
+  }
+  constexpr int kBody = 23;
+  const int items = static_cast<unsigned char>(d[kItemCountOffset]);
+  if (items < kBody) {
+    return d;  // an object: props are not part of its stream
+  }
+  // Renumber everything after the body first, while the offsets still hold.
+  for (int i = kBody; i < items; ++i) {
+    const size_t at = kHeaderSize + i * item_size;
+    putInt32(d, at, getInt32(d, at) + props);
+  }
+  std::vector<char> prop_items(item_size * props, 0);
+  for (int p = 0; p < props; ++p) {
+    putInt32(prop_items, p * item_size, kBody + 1 + p);
+    if (messageTypeOf(d) == 0x02) {
+      for (int k = 0; k < 3; ++k) {
+        putFloat(prop_items, p * item_size + 4 + 4 * k, kPropPosition[k]);
+      }
+      // A non-identity orientation: SkeletonPublisher treats identity as "no
+      // data yet", and a real prop never reports exactly identity either.
+      putFloat(prop_items, p * item_size + 16, 0.7071068f);
+      putFloat(prop_items, p * item_size + 20, 0.7071068f);
+    }
+  }
+  d.insert(
+    d.begin() + static_cast<std::ptrdiff_t>(kHeaderSize + kBody * item_size),
+    prop_items.begin(), prop_items.end());
+  d[kItemCountOffset] = static_cast<char>(items + props);
+  d[kPropCountOffset] = static_cast<char>(props);
+  return d;
+}
+
+/// Drops the finger segments from a per-segment body datagram, as streamed by
+/// an actor without gloves.  Must be applied before withProps().
+std::vector<char> withoutFingers(std::vector<char> d)
+{
+  const size_t item_size = itemSizeOf(d);
+  if (item_size == 0) {
+    return d;
+  }
+  constexpr int kBody = 23;
+  const int items = static_cast<unsigned char>(d[kItemCountOffset]);
+  if (items <= kBody) {
+    return d;
+  }
+  d.resize(kHeaderSize + kBody * item_size);
+  d[kItemCountOffset] = static_cast<char>(kBody);
+  d[kFingerCountOffset] = 0;
+  return d;
+}
+
+/// Avatar 0's datagrams, each passed through @p transform.
+template<typename Transform>
+std::vector<std::vector<char>> primaryAvatarWith(Transform transform)
+{
+  std::vector<std::vector<char>> out;
+  for (const auto & d : loadFixture()) {
+    if (avatarIdOf(d) == 0) {
+      out.push_back(transform(d));
+    }
+  }
+  return out;
+}
+
+std::vector<char> firstPoseDatagram(const std::vector<std::vector<char>> & datagrams)
+{
+  for (const auto & d : datagrams) {
+    if (messageTypeOf(d) == 0x02) {
+      return d;
+    }
+  }
+  throw std::runtime_error("no pose datagram in fixture");
+}
+
 /// Polls until `pred` holds or the timeout expires; keeps the tests from
 /// depending on how quickly the acquisition thread gets scheduled.
 template<typename Pred>
@@ -182,6 +317,33 @@ TEST(AvatarDemux, FixtureHoldsThreeAvatars)
   EXPECT_EQ(pose_segments[0], 63);
   EXPECT_EQ(pose_segments[1], 63);
   EXPECT_EQ(pose_segments[2], 1);
+
+  // The pose header also spells out the segment layout, which the prop tests
+  // below build on: 23 body + 0 prop + 40 finger segments for a suit.
+  const auto pose = firstPoseDatagram(datagrams);
+  EXPECT_EQ(static_cast<unsigned char>(pose[kBodyCountOffset]), 23);
+  EXPECT_EQ(static_cast<unsigned char>(pose[kPropCountOffset]), 0);
+  EXPECT_EQ(static_cast<unsigned char>(pose[kFingerCountOffset]), 40);
+}
+
+TEST(AvatarDemux, PoseHeaderCountsAreParsed)
+{
+  // The SDK used to discard these header bytes; the link builder depends on
+  // them to tell a prop from a finger segment.
+  const auto pose = withProps(firstPoseDatagram(loadFixture()), 2);
+  QuaternionDatagram datagram;
+  datagram.deserialize(pose.data());
+  EXPECT_EQ(datagram.dataCount(), 65);
+  EXPECT_EQ(datagram.bodySegmentCount(), 23);
+  EXPECT_EQ(datagram.propCount(), 2);
+  EXPECT_EQ(datagram.fingerSegmentCount(), 40);
+
+  const auto items = datagram.getData();
+  ASSERT_EQ(items.size(), 65u);
+  EXPECT_EQ(items[23].segmentId, 24);   // first prop
+  EXPECT_EQ(items[24].segmentId, 25);   // second prop
+  EXPECT_EQ(items[25].segmentId, 26);   // left carpus, renumbered
+  EXPECT_EQ(items.back().segmentId, 65);
 }
 
 TEST(AvatarDemux, TracksEveryAvatarSeparately)
@@ -370,6 +532,105 @@ TEST(AvatarDemux, KeepsWaitingWhenTheStreamStartsLate)
 
   EXPECT_TRUE(init_result) << "init() should succeed once the stream starts";
   EXPECT_TRUE(waitFor([&]() {return !client.getSegments().empty();}));
+}
+
+TEST(AvatarDemux, PropSegmentsSitBetweenBodyAndFingers)
+{
+  // An actor holding one prop, with gloves: 23 + 1 + 40 segments.  Before the
+  // header counts were read, the prop was published as the left carpus, every
+  // finger shifted by one and the last right-hand segment was dropped.
+  const int port = nextPort();
+  Replayer replayer(port, primaryAvatarWith([](const auto & d) {return withProps(d, 1);}));
+  replayer.start();
+
+  XsensStreamClient client(testLogger(), port, 0, false);
+  ASSERT_TRUE(client.init());
+  ASSERT_TRUE(waitFor([&]() {return client.getSegments().size() == 64u;}))
+    << "expected 64 segments, saw " << client.getSegments().size();
+
+  const auto segments = client.getSegments();
+  ASSERT_TRUE(segments.count("prop_1"));
+  ASSERT_TRUE(segments.count("left_carpus"));
+  ASSERT_TRUE(segments.count("right_fifth_dp")) << "last right-hand segment must survive";
+  EXPECT_FALSE(segments.count("prop_2"));
+  EXPECT_FALSE(client.isObject(0));
+
+  // The prop carries the data that was injected for it, not a finger's.
+  const auto & prop = segments.at("prop_1");
+  EXPECT_FLOAT_EQ(prop.position.x(), kPropPosition[0]);
+  EXPECT_FLOAT_EQ(prop.position.y(), kPropPosition[1]);
+  EXPECT_FLOAT_EQ(prop.position.z(), kPropPosition[2]);
+
+  // The hands keep their own data: the left carpus (now segment 25) must be
+  // the same segment that was number 24 before the prop was inserted.  The
+  // fixture holds two frames, so the published value may come from either.
+  std::vector<float> carpus_x;
+  for (const auto & d : loadFixture()) {
+    if (avatarIdOf(d) != 0 || messageTypeOf(d) != 0x02) {
+      continue;
+    }
+    const size_t carpus_at = kHeaderSize + 23 * 32;
+    ASSERT_EQ(getInt32(d, carpus_at), 24);
+    float x;
+    const uint32_t ux = static_cast<uint32_t>(getInt32(d, carpus_at + 4));
+    std::memcpy(&x, &ux, sizeof x);
+    carpus_x.push_back(x);
+  }
+  ASSERT_FALSE(carpus_x.empty());
+  const float published_x = static_cast<float>(segments.at("left_carpus").position.x());
+  EXPECT_NE(std::find(carpus_x.begin(), carpus_x.end(), published_x), carpus_x.end())
+    << "left_carpus x = " << published_x << " matches neither frame's segment 24";
+
+  // A stable layout must not keep rebuilding the model, which would also
+  // starve the joint model.
+  EXPECT_TRUE(waitFor([&]() {return !client.getJoints().empty();}));
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  EXPECT_EQ(client.getSegments().size(), 64u);
+  EXPECT_FALSE(client.getJoints().empty());
+}
+
+TEST(AvatarDemux, PropsWithoutGlovesAreNotMistakenForFingers)
+{
+  // Two props and no finger data: 25 segments.  Inferred from the item count
+  // alone this looks like a one-segment hand on each side.
+  const int port = nextPort();
+  Replayer replayer(
+    port, primaryAvatarWith([](const auto & d) {return withProps(withoutFingers(d), 2);}));
+  replayer.start();
+
+  XsensStreamClient client(testLogger(), port, 0, false);
+  ASSERT_TRUE(client.init());
+  ASSERT_TRUE(waitFor([&]() {return client.getSegments().size() == 25u;}))
+    << "expected 25 segments, saw " << client.getSegments().size();
+
+  const auto segments = client.getSegments();
+  EXPECT_TRUE(segments.count("prop_1"));
+  EXPECT_TRUE(segments.count("prop_2"));
+  EXPECT_FALSE(segments.count("left_carpus"));
+  EXPECT_FALSE(segments.count("right_carpus"));
+  EXPECT_TRUE(segments.count("pelvis"));
+  EXPECT_FALSE(client.isObject(0));
+  EXPECT_TRUE(waitFor([&]() {return !client.getJoints().empty();}));
+}
+
+TEST(AvatarDemux, OnePropWithoutGlovesIsNotDropped)
+{
+  // 24 segments: an odd count beyond the body used to round to zero finger
+  // segments, skip the prop, and then rebuild the model on every frame.
+  const int port = nextPort();
+  Replayer replayer(
+    port, primaryAvatarWith([](const auto & d) {return withProps(withoutFingers(d), 1);}));
+  replayer.start();
+
+  XsensStreamClient client(testLogger(), port, 0, false);
+  ASSERT_TRUE(client.init());
+  ASSERT_TRUE(waitFor([&]() {return client.getSegments().size() == 24u;}))
+    << "expected 24 segments, saw " << client.getSegments().size();
+  EXPECT_TRUE(client.getSegments().count("prop_1"));
+  EXPECT_TRUE(waitFor([&]() {return !client.getJoints().empty();}))
+    << "joints never built: the model is probably being rebuilt every frame";
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  EXPECT_FALSE(client.getJoints().empty());
 }
 
 int main(int argc, char ** argv)

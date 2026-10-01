@@ -108,6 +108,16 @@ inline std::string fingerSegmentName(const std::string & side, int position)
   return side + "_" + suffixes[position];
 }
 
+/// Name of the @p index-th (0-based) prop segment: "prop_1", "prop_2", ...
+/// A prop is a rigid object attached to the actor (a sword, a ball) that MVN
+/// streams as extra segments inside the body's datagram.  It has no kinetic
+/// parent, so kineticParent() returns empty for it and the publisher
+/// broadcasts it as an absolute pose in the reference frame.
+inline std::string propSegmentName(int index)
+{
+  return "prop_" + std::to_string(index + 1);
+}
+
 /// Parses a name produced by fingerSegmentName() back into its side and its
 /// 0-based index within the hand block.  Returns false if `seg` is not a hand
 /// segment name.

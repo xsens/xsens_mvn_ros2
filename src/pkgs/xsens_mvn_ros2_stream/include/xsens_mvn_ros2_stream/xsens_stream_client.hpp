@@ -41,6 +41,8 @@ struct AvatarStream
   xsens_mvn_ros2::HumanDataHandler::Ptr data;
   std::vector<std::string> linkNames;
   std::vector<std::string> jointNames;
+  /// Item count of the quaternion datagram the link model was built from.
+  size_t modelSegmentCount{0};
   bool linksBuilt{false};
   bool jointsBuilt{false};
   /// True for a rigid body (an object/prop): fewer segments than a body model
@@ -121,6 +123,14 @@ private:
   /// links from a quaternion datagram, joints from a joint-angles datagram.
   /// Safe to call on every datagram; does nothing once the model is complete.
   void buildAvatarModelIncremental(AvatarStream & av, uint8_t avatar_id);
+  /// How a pose datagram's items split into the three consecutive blocks MVN
+  /// sends: body segments, then prop segments, then finger segments.
+  struct SegmentLayout
+  {
+    int body{0};
+    int props{0};
+    int fingers{0};
+  };
   bool buildLinksFromQuaternions(AvatarStream & av, QuaternionDatagram & quaternions);
   bool buildJointsFromAngles(AvatarStream & av, JointAnglesDatagram & joint_angles);
   QuaternionDatagram waitForQuaternionDatagram();

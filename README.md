@@ -661,6 +661,28 @@ rigid object: its segments are named `base_link` (then `link_2`, `link_3`, …)
 and it is published as an absolute pose in `reference_frame`. Objects send no
 joint-angle datagram, so the node does not wait for one.
 
+### Props
+
+A **prop** — a rigid object attached to an actor in MVN (a sword, a ball, a
+tool) — is not an avatar. MVN streams it as extra segments inside the actor's
+own pose datagram, laid out as three consecutive blocks:
+
+```
+[23 body segments][prop segments][finger segments]
+```
+
+The datagram header states the length of each block, and the stream node reads
+those counts rather than inferring the layout from the item total (a prop and
+a finger segment are indistinguishable by count alone). Props are named
+`prop_1`, `prop_2`, … in segment order and published under the actor's prefix
+as absolute poses in `reference_frame`, e.g. `skeleton_prop_1`; they appear on
+the actor's `link_states` with pose, twist and acceleration, and never on
+`joint_states`. The generated URDF carries no prop geometry, so a prop shows up
+in RViz as a TF frame rather than a mesh.
+
+When a prop is added or removed, the actor's segment count changes and its
+model is rebuilt on the fly, as for any other layout change.
+
 Avatars are discovered while streaming — no restart is needed when one joins.
 If an avatar's segment count changes (MVN recomposing a scene, an actor
 joining, avatars being renumbered) its model is rebuilt, because the id may now
@@ -749,9 +771,9 @@ its tests so the two cannot drift apart.
 
 ### Finger segments (MANUS gloves)
 
-When MVN streams finger tracking, each hand adds a 20-segment block. The block
-is **not** a uniform 5 x 4 grid of phalanges — it is the MVN hand model, which
-happens to also total 20:
+When MVN streams finger tracking, each hand adds a 20-segment block after the
+body and any [prop](#props) segments. The block is **not** a uniform 5 x 4 grid
+of phalanges — it is the MVN hand model, which happens to also total 20:
 
 ```
 carpus (1) + thumb MC/PP/DP (3) + four fingers x MC/PP/MP/DP (16)
@@ -1019,8 +1041,11 @@ Unit tests use **Google Test** (`ament_cmake_gtest`). The `colcon_defaults.yaml`
 
 `src/pkgs/xsens_mvn_ros2_stream/test/data/mvn_three_avatars.bin` is a trimmed
 recording of a real MVN stream: two body avatars (63 segments, 28 joints, with
-MANUS finger data) and one tracked object (1 segment), two frames of every
-datagram type each. It is length-prefixed records — a 4-byte big-endian length
+MANUS finger data, no props) and one tracked object (1 segment), two frames of
+every datagram type each. The prop tests rewrite these datagrams the way MVN
+lays out an actor holding props — extra segments between the body and the
+finger blocks, with the header counts updated — since no capture with a prop
+was available. It is length-prefixed records — a 4-byte big-endian length
 followed by that many bytes of datagram.
 
 `test_avatar_demux` replays it into a real UDP socket, so the demultiplexing is

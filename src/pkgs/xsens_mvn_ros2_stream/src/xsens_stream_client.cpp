@@ -125,7 +125,9 @@ XsensStreamClient::ReadResult XsensStreamClient::readData()
     auto read_bytes = m_udpSocket->read(m_dataBuffer, MAX_MVN_DATAGRAM_SIZE);
     if (read_bytes > 0) {
       // MVN streams every avatar on the same port: the captured subject plus
-      // any tracked objects/props, each tagged with an avatar id.  An object
+      // any tracked objects, each tagged with an avatar id.  (A prop attached
+      // to an actor is not an avatar: it travels as extra segments inside the
+      // actor's own datagrams, see buildLinksFromQuaternions.)  An object
       // arrives as a one-segment datagram of the very same type as the
       // subject's, so letting it reach the parser would replace the subject's
       // pose data and zero out every segment the object does not define.
@@ -174,6 +176,7 @@ bool XsensStreamClient::buildXsensModel()
     av.data = std::make_shared<xsens_mvn_ros2::HumanDataHandler>(m_logger);
     av.linkNames.clear();
     av.jointNames.clear();
+    av.modelSegmentCount = 0;
     av.linksBuilt = false;
     av.jointsBuilt = false;
   }
@@ -217,14 +220,18 @@ void XsensStreamClient::buildAvatarModelIncremental(AvatarStream & av, uint8_t a
     // new data: every segment the old list has but the new data lacks would
     // silently read as zero, and the avatar would keep its old body/object
     // classification.
-    if (av.linksBuilt && segment_count != av.linkNames.size()) {
+    // The comparison is against the item count the model was built from, not
+    // the number of links it ended up with: a segment the builder had to skip
+    // would otherwise make every frame look like a layout change.
+    if (av.linksBuilt && segment_count != av.modelSegmentCount) {
       RCLCPP_WARN(
         m_logger,
         "Avatar %u changed from %zu to %zu segment(s); rebuilding its model.",
-        static_cast<unsigned>(avatar_id), av.linkNames.size(), segment_count);
+        static_cast<unsigned>(avatar_id), av.modelSegmentCount, segment_count);
       av.data = std::make_shared<xsens_mvn_ros2::HumanDataHandler>(m_logger);
       av.linkNames.clear();
       av.jointNames.clear();
+      av.modelSegmentCount = 0;
       av.linksBuilt = false;
       av.jointsBuilt = false;
     }
@@ -257,11 +264,12 @@ bool XsensStreamClient::buildLinksFromQuaternions(
 {
   XsensModelNames xsens_model_names;
 
-  // Segment IDs 1..23 are the standard body model, indexed
-  // directly into xsens_model_names.links
-  // Any segments beyond that are assumed to be MANUS finger-tracking data,
-  // appended by MVN as [left hand block][right hand block]
-  // Each hand block is 20 segments (5 fingers x 4 phalanges)
+  // A pose datagram lays its segments out as three consecutive blocks:
+  //   [body segments][prop segments][finger segments]
+  // Segment ids simply count up through the blocks, so a prop's id depends on
+  // how many body segments precede it and the first finger id depends on how
+  // many props there are.  The header says how long each block is; a layout
+  // inferred from the item count alone cannot tell a prop from a finger.
   constexpr int kBodySegmentCount = 23;
 
   const auto segments = quaternions.getData();
@@ -272,10 +280,29 @@ bool XsensStreamClient::buildLinksFromQuaternions(
   }
 
   av.linkNames.clear();
+  av.modelSegmentCount = static_cast<size_t>(total_segments);
 
-  // Anything smaller than the body model is a tracked object (a prop), which
-  // MVN streams as a rigid body: a handful of segments and no joints.
-  av.isObject = total_segments < kBodySegmentCount;
+  SegmentLayout layout;
+  layout.body = quaternions.bodySegmentCount();
+  layout.props = quaternions.propCount();
+  layout.fingers = quaternions.fingerSegmentCount();
+  if (layout.body + layout.props + layout.fingers != total_segments) {
+    // Older MVN versions leave these header bytes zero.  Fall back to the
+    // pre-header assumption: a body (or an object) with nothing but finger
+    // data after it.
+    RCLCPP_WARN(
+      m_logger,
+      "Quaternion datagram header (%d body + %d prop + %d finger segments) does not add up "
+      "to its %d items; assuming no props.",
+      layout.body, layout.props, layout.fingers, total_segments);
+    layout.body = std::min(total_segments, kBodySegmentCount);
+    layout.props = 0;
+    layout.fingers = total_segments - layout.body;
+  }
+
+  // Anything smaller than the body model is a tracked object, which MVN
+  // streams as a rigid body: a handful of segments and no joints.
+  av.isObject = layout.body < kBodySegmentCount;
   if (av.isObject) {
     for (int i = 0; i < total_segments; ++i) {
       // "base_link" has no kinetic parent, so SkeletonPublisher broadcasts it
@@ -294,14 +321,18 @@ bool XsensStreamClient::buildLinksFromQuaternions(
 
   RCLCPP_INFO(m_logger, "Building model: %d links available.", total_segments);
 
-  const int extra_segments = std::max(0, total_segments - kBodySegmentCount);
-  const int segments_per_hand = extra_segments / 2;
-  if (extra_segments % 2 != 0) {
+  if (layout.props > 0) {
+    RCLCPP_INFO(m_logger, "%d prop segment(s) attached to the body.", layout.props);
+  }
+  // MVN appends the finger data as [left hand block][right hand block], each
+  // the 20-segment MVN hand model.
+  const int segments_per_hand = layout.fingers / 2;
+  if (layout.fingers % 2 != 0) {
     RCLCPP_WARN(
       m_logger,
-      "Received %d segments beyond the standard %d-segment body model (odd number) "
-      "so the left/right hand split below is likely wrong.",
-      extra_segments, kBodySegmentCount);
+      "Received %d finger segments (odd number) so the left/right hand split below "
+      "is likely wrong.",
+      layout.fingers);
   }
   if (segments_per_hand > 0) {
     RCLCPP_INFO(
@@ -309,24 +340,30 @@ bool XsensStreamClient::buildLinksFromQuaternions(
       segments_per_hand);
   }
 
+  const int first_prop_id = layout.body + 1;
+  const int first_finger_id = first_prop_id + layout.props;
+  const int last_finger_id = first_finger_id + 2 * segments_per_hand - 1;
+
   for (const auto & xsens_link : segments) {
     const int segment_id = xsens_link.segmentId;
     std::string link_name;
 
     if (segment_id >= 1 && segment_id <= kBodySegmentCount) {
       link_name = xsens_model_names.links[segment_id];
-    } else if (  // NOLINT(readability/braces)
-      segments_per_hand > 0 && segment_id > kBodySegmentCount &&
-      segment_id <= kBodySegmentCount + 2 * segments_per_hand)
-    {
-      const int offset = segment_id - kBodySegmentCount - 1;  // 0-based, both hands
+    } else if (segment_id >= first_prop_id && segment_id < first_finger_id) {
+      // A prop is a rigid object held by or attached to the actor.  It has no
+      // kinetic parent in the body model, so SkeletonPublisher broadcasts it
+      // as an absolute pose in the reference frame.
+      link_name = propSegmentName(segment_id - first_prop_id);
+    } else if (segment_id >= first_finger_id && segment_id <= last_finger_id) {
+      const int offset = segment_id - first_finger_id;  // 0-based, both hands
       const bool is_left = offset < segments_per_hand;
       const int position = is_left ? offset : offset - segments_per_hand;
       link_name = fingerSegmentName(is_left ? "left" : "right", position);
     } else {
       RCLCPP_WARN(
         m_logger,
-        "Segment ID %d is outside the known body/finger model range "
+        "Segment ID %d is outside the known body/prop/finger model range "
         "(%d total segments this frame); skipping.",
         segment_id, total_segments);
       continue;

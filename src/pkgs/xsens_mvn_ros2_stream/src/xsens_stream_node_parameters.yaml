@@ -18,10 +18,12 @@ xsens_stream_node:
     default_value: 0
     description: >
       MVN avatar (character) to track.  MVN streams every avatar on the same
-      port - the captured subject plus any tracked objects/props - tagged by an
+      port - the captured subject plus any tracked objects - tagged by an
       avatar id in each datagram header.  Datagrams from other avatars are
       discarded, since parsing them would overwrite this avatar's pose data.
-      The captured subject is avatar 0; objects are numbered from 1.
+      The captured subject is avatar 0; objects are numbered from 1.  A prop
+      attached to an actor is not an avatar of its own: it arrives as extra
+      segments in that actor's data and is published as prop_1, prop_2, ...
     validation:
       bounds<>: [0, 255]
   track_all_avatars:
