@@ -9,6 +9,7 @@ ROS2 driver for Xsens motion capture suits. Supports two operational modes: rece
 - [Overview](#overview)
 - [Package Structure](#package-structure)
 - [Installation](#installation)
+- [Setting Up MVN for Streaming](#setting-up-mvn-for-streaming)
 - [Quick Start](#quick-start)
 - [Lifecycle Management](#lifecycle-management)
 - [Architecture](#architecture)
@@ -20,7 +21,9 @@ ROS2 driver for Xsens motion capture suits. Supports two operational modes: rece
 - [Launch Files](#launch-files)
 - [Code Style Guidelines](#code-style-guidelines)
 - [Testing](#testing)
+- [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
+- [License](#license)
 
 ---
 
@@ -30,12 +33,12 @@ The driver publishes skeletal kinematics as ROS2 topics and TF transforms, makin
 
 | Mode | Node | When to use |
 |------|------|-------------|
-| **Stream** | `xsens_mvn_ros2_stream_node` | MVN Studio (Windows) is running and streaming data over UDP |
-| **XME** | `xsens_mvn_ros2_xme_node` | Direct Linux connection to the suit hardware (no Windows PC needed) |
+| **Stream** | `xsens_mvn_ros2_stream_node` | MVN Studio (Windows or Linux) is running and streaming data over UDP |
+| **XME** | `xsens_mvn_ros2_xme_node` | Direct connection from the ROS2 machine to the suit hardware, without MVN Studio |
 
 A third node — the **URDF publisher** — dynamically generates a body-proportioned robot description from the live TF data, enabling accurate mesh-scaled visualization in RViz.
 
-**ROS Distribution:** Jazzy Jalisco
+**ROS Distributions:** Jazzy Jalisco (Ubuntu 24.04), Humble Hawksbill (Ubuntu 22.04)
 **Build system:** colcon / ament_cmake
 **Language:** C++17
 
@@ -57,7 +60,9 @@ xsens_mvn_ros2/                      <- workspace root
 │       ├── xsens_mvn_sdk/            <- custom MVN UDP protocol parser (ament package)
 │       └── xsens_xme_sdk/            <- vendored XME SDK binaries and headers
 ├── Puppet.mvn / Puppet.mvna          <- example MVN calibration files
-└── colcon_defaults.yaml              <- workspace build defaults
+├── colcon_defaults.yaml              <- workspace build defaults
+├── LICENSE                           <- BSD 3-Clause
+└── LICENSES.md                       <- license overview incl. third-party components
 ```
 
 ### Package Dependency Graph
@@ -94,15 +99,19 @@ xsens_mvn_ros2 (meta-package)
 
 ### Prerequisites
 
-- **OS:** Ubuntu 24.04 LTS
-- **ROS2:** [Jazzy Jalisco](https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debians.html) (ros-base or desktop)
+| OS | ROS2 distribution |
+|----|-------------------|
+| Ubuntu 24.04 LTS (Noble) | [Jazzy Jalisco](https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debians.html) |
+| Ubuntu 22.04 LTS (Jammy) | [Humble Hawksbill](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html) |
 
-Install ROS2 and development tools:
+Either `ros-base` or `desktop` works; `desktop` includes RViz. Install ROS2 and the development tools for your distribution (the examples below use Jazzy; replace `jazzy` with `humble` on Ubuntu 22.04):
 
 ```bash
 sudo apt-get update
 sudo apt-get install ros-jazzy-ros-base ros-dev-tools
 ```
+
+For stream mode you also need **Xsens MVN Studio** (Windows or Linux) streaming to the machine where the driver runs. MVN Studio can run on the same machine as the driver or on another machine on the network; see [Setting Up MVN for Streaming](#setting-up-mvn-for-streaming).
 
 For XME mode (direct hardware connection), the XME SDK is vendored in `src/deps/xsens_xme_sdk/` — no additional SDK installation is needed. However, a **valid XME SDK license** is required on the host machine. Without it, the XME node will fail during configuration with a `"License system not constructed"` error. The Linux license manager can be downloaded from the [Xsens Software & Documentation](https://www.xsens.com/support/software-documentation) page. Contact Xsens for license information.
 
@@ -110,24 +119,21 @@ For XME mode (direct hardware connection), the XME SDK is vendored in `src/deps/
 
 ```bash
 # 1. Clone the repository
-git clone <repository-url>
+git clone https://github.com/xsens/xsens_mvn_ros2.git
 cd xsens_mvn_ros2
 
-# 2. Initialize submodules (if any)
-git submodule update --init --recursive
-
-# 3. Source ROS2
+# 2. Source ROS2 (use /opt/ros/humble on Ubuntu 22.04)
 source /opt/ros/jazzy/setup.bash
 
-# 4. Install ROS dependencies
+# 3. Install ROS dependencies
 sudo rosdep init   # only needed once per system
 rosdep update
 rosdep install -y -i --from-paths $(colcon list --paths-only)
 
-# 5. Build
+# 4. Build
 colcon build
 
-# 6. Source the workspace
+# 5. Source the workspace
 source install/setup.bash
 ```
 
@@ -142,6 +148,7 @@ The `colcon_defaults.yaml` in the repo root pre-configures common settings:
 | Code coverage | `--coverage` | gcov instrumentation enabled |
 | Testing | `ON` | Build and run tests |
 | Install mode | Symlink | Faster iteration during development |
+| Python interpreter | `/usr/bin/python3` | Pinned so CMake uses the system (ROS) Python. A user-local Python earlier on `PATH` (for example one installed by `uv`) lacks `catkin_pkg` and makes the build fail at configure time. |
 
 To build in Release mode without coverage:
 
@@ -165,11 +172,39 @@ ros2 pkg executables xsens_mvn_ros2_description
 
 ---
 
+## Setting Up MVN for Streaming
+
+Stream mode needs MVN Studio to send its data to the Linux machine running the driver. In MVN Studio, open the **Network Streamer** and add a stream target:
+
+1. **Preset:** select the **ROS2** preset. It enables the datagrams the driver uses.
+2. **Host:** the IP address of the machine running the driver, or `127.0.0.1` if MVN Studio runs on the same machine.
+3. **Port:** `9763` (the driver's default `udp_port`). If you choose another port, pass the same value as `udp_port:=<port>` when launching.
+4. **Protocol:** UDP.
+
+The driver uses these datagrams:
+
+| MVN datagram | Required | Used for |
+|--------------|----------|----------|
+| Position + orientation (quaternion) | **Yes** | Segment poses, TF; the model is built from it |
+| Joint angles | **Yes** (bodies) | `joint_states`; the body model waits for it |
+| Linear segment kinematics | No | Velocity and acceleration in `link_states` |
+| Angular segment kinematics | No | Angular velocity and acceleration in `link_states` |
+| Center of mass | No | `com` topic |
+
+Optional data:
+
+- **Finger tracking data** (gloves): published as extra TF frames per hand and drawn in RViz. See [Finger segments](#finger-segments-glove-data).
+- **Object tracking data** / additional actors: each is streamed as a separate avatar. Read [Multiple Avatars](#multiple-avatars) before enabling this: with the defaults only avatar `0` (the captured subject) is published, which keeps a single-suit setup safe.
+
+When MVN Studio and the driver run on different machines, make sure the firewalls on both allow UDP traffic on the chosen port.
+
+---
+
 ## Quick Start
 
 ### Stream Mode (MVN Studio)
 
-Configure Xsens MVN Studio to stream data via UDP, then launch:
+Set up the MVN Network Streamer as described in [Setting Up MVN for Streaming](#setting-up-mvn-for-streaming), then launch:
 
 ```bash
 ros2 launch xsens_mvn_ros2 xsens_stream.launch.py
@@ -373,7 +408,7 @@ The driver follows a layered architecture with clear separation of concerns:
 ### Data Flow — Stream Mode
 
 ```
-Xsens MVN Studio (Windows, UDP)
+Xsens MVN Studio (UDP, same or remote machine)
         │
         ▼
 XsensStreamClient (UDP socket, background thread)
@@ -426,7 +461,7 @@ XsensUrdfPublisherNode
 
 ### Skeleton Definition
 
-The driver uses the 23-segment MVN body model defined in `xsens_model.hpp`, plus an optional 20-segment finger block per hand when MANUS gloves are streamed (see [Finger segments](#finger-segments-manus-gloves)):
+The driver uses the 23-segment MVN body model defined in `xsens_model.hpp`, plus an optional 20-segment finger block per hand when glove / finger tracking data is streamed (see [Finger segments](#finger-segments-glove-data)):
 
 ```
 pelvis
@@ -769,9 +804,9 @@ The segment tables that drive generation live in
 `include/xsens_mvn_ros2_description/segment_defs.hpp`, shared by the node and
 its tests so the two cannot drift apart.
 
-### Finger segments (MANUS gloves)
+### Finger segments (glove data)
 
-When MVN streams finger tracking, each hand adds a 20-segment block after the
+When MVN streams glove / finger tracking data, each hand adds a 20-segment block after the
 body and any [prop](#props) segments. The block is **not** a uniform 5 x 4 grid
 of phalanges — it is the MVN hand model, which happens to also total 20:
 
@@ -1007,7 +1042,7 @@ The XML launches accept the scalar arguments of the Python versions, except `aut
 
 All packages declare `ament_lint_auto` + `ament_lint_common` as test dependencies. This enables the standard ROS2 linting suite automatically:
 
-- **ament_copyright** — license header check (**currently disabled** — `set(ament_cmake_copyright_FOUND TRUE)` in each `CMakeLists.txt` until the project license is finalized; re-enable by removing that line and adding the appropriate copyright/license headers to all source files)
+- **ament_copyright** — license header check (**currently disabled** via `set(ament_cmake_copyright_FOUND TRUE)` in each `CMakeLists.txt`). The project is licensed BSD-3-Clause and source files carry an `SPDX-License-Identifier: BSD-3-Clause` header; new files must include it too. To re-enable the check, remove that line once every file has a header the linter accepts.
 - **ament_cppcheck** — static analysis
 - **ament_cpplint** — Google C++ style subset
 - **ament_flake8** — Python linting (launch files)
@@ -1041,7 +1076,7 @@ Unit tests use **Google Test** (`ament_cmake_gtest`). The `colcon_defaults.yaml`
 
 `src/pkgs/xsens_mvn_ros2_stream/test/data/mvn_three_avatars.bin` is a trimmed
 recording of a real MVN stream: two body avatars (63 segments, 28 joints, with
-MANUS finger data, no props) and one tracked object (1 segment), two frames of
+glove finger data, no props) and one tracked object (1 segment), two frames of
 every datagram type each. The prop tests rewrite these datagrams the way MVN
 lays out an actor holding props — extra segments between the body and the
 finger blocks, with the header counts updated — since no capture with a prop
@@ -1076,13 +1111,35 @@ colcon test --packages-select xsens_mvn_ros2_stream
 colcon test-result --verbose
 ```
 
+### Adding Tests
+
+Every change must keep `colcon test` green. Add tests next to the code you change (`<package>/test/`) and register them with `ament_add_gtest` in the package `CMakeLists.txt`.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause | What to do |
+|---------|--------------|------------|
+| `Timeout waiting for quaternion datagram after 30 seconds` | No data reaches the node within 30 s of configuring it | Check that MVN Studio is streaming to this machine's IP and the same port as `udp_port`, that the quaternion datagram is enabled (ROS2 preset), and that no firewall blocks UDP on that port. Starting the node before MVN is fine; it waits up to 30 s. |
+| `Timeout waiting for joint angles datagram after 30 s` | Joint angles are not enabled in the Network Streamer | Enable joint angles (the ROS2 preset includes them). |
+| `Error binding Xsens UDP port <port>` | Another process (often a second driver instance) already uses the port | Stop the other process, or stream to a different port and pass `udp_port:=<port>`. |
+| Skeleton jumps, freezes at the pelvis, or segments collapse to zero | Object or multi-actor streaming is on in MVN and the node is mixing avatars | Use the default `avatar_id: 0` for the captured subject, or set `track_all_avatars:=true` with `avatar_names`. See [Multiple Avatars](#multiple-avatars). |
+| One of two avatars shows "invalid model" in RViz | Both URDFs use the same robot name | Give each avatar a distinct name (`avatar_names` or `model_name`). See [One URDF publisher per model](#one-urdf-publisher-per-model). |
+| URDF publisher reports an error and never publishes for an object | A URDF publisher was started for a tracked object, which has no pelvis frame | List the object in `object_avatars`. |
+| Fingers don't appear in RViz | Finger tracking data is not enabled in the Network Streamer, or no gloves are connected | Enable finger tracking data in MVN; the finger frames appear once data arrives. |
+| XME node fails to configure with `License system not constructed` | No valid XME SDK license on the host | Install and activate the license with the Linux license manager from [Xsens Software & Documentation](https://www.xsens.com/support/software-documentation). |
+| Build fails in `ament_package()` with a missing `catkin_pkg` | CMake picked up a non-ROS Python interpreter | Build with the repo's `colcon_defaults.yaml` (it pins `/usr/bin/python3`), or remove the other Python from `PATH` for the build. |
+
+Check `/diagnostics` (`ros2 run rqt_robot_monitor rqt_robot_monitor`) for each node's status, data age and per-avatar information.
+
 ---
 
 ## Contributing
 
 ### Branching
 
-Feature branches follow the pattern `feature/<ticket>_<description>` (e.g. `feature/2588_create_ros_complient_error_handling`).
+Feature branches follow the pattern `feature/<ticket>_<description>` (e.g. `feature/1234_add_prop_support`). Without a ticket, use `feature/<description>`.
 
 ### Adding a New Package
 
@@ -1093,3 +1150,7 @@ Feature branches follow the pattern `feature/<ticket>_<description>` (e.g. `feat
 5. If the meta-package should depend on it, add an `<exec_depend>` to `src/pkgs/xsens_mvn_ros2/package.xml`.
 
 ---
+
+## License
+
+This project is licensed under the **BSD 3-Clause License**. See [LICENSE](LICENSE). Third-party components (such as the vendored XME SDK) have their own licenses; see [LICENSES.md](LICENSES.md) for an overview.
