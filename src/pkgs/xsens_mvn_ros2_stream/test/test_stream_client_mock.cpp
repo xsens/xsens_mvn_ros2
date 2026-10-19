@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -82,6 +83,37 @@ TEST(MockMotionCaptureSource, LastDataTimeNsReturnsExpected)
 {
   MockMotionCaptureSource mock;
   EXPECT_EQ(mock.lastDataTimeNs(), 42000000LL);
+}
+
+// ---- Multi-avatar defaults on IMotionCaptureSource ----
+//
+// MVN streams several avatars at once, but a single-avatar source (like the
+// XME node, or any existing mock) must keep working untouched.  These pin the
+// back-compatible defaults the interface promises.
+
+TEST(MockMotionCaptureSource, DefaultsToASingleAvatarZero)
+{
+  MockMotionCaptureSource mock;
+  EXPECT_EQ(mock.avatarIds(), std::vector<uint8_t>{0});
+}
+
+TEST(MockMotionCaptureSource, PerAvatarAccessorsFallBackToTheSingleAvatar)
+{
+  MockMotionCaptureSource mock;
+  // A source that does not implement multi-avatar reports the same data for
+  // any id, matching its single-avatar accessors.
+  EXPECT_EQ(mock.getAvatarSegments(0).size(), mock.getSegments().size());
+  EXPECT_EQ(mock.getAvatarJoints(0).size(), mock.getJoints().size());
+  ASSERT_TRUE(mock.getAvatarCOM(0).has_value());
+  EXPECT_TRUE(mock.getAvatarCOM(0)->isApprox(*mock.getCOM()));
+  EXPECT_EQ(mock.avatarLastDataTimeNs(0), mock.lastDataTimeNs());
+}
+
+TEST(MockMotionCaptureSource, NothingIsAnObjectByDefault)
+{
+  MockMotionCaptureSource mock;
+  EXPECT_FALSE(mock.isObject(0));
+  EXPECT_FALSE(mock.isObject(7));
 }
 
 int main(int argc, char ** argv)

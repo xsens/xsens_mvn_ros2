@@ -43,6 +43,9 @@ Datagram::Datagram() :
 		m_avatarId(0),
 		m_dgramCounter(0x80),
 		m_dataCount(0),
+		m_bodySegmentCount(0),
+		m_propCount(0),
+		m_fingerSegmentCount(0),
 		m_frameTime(0),
 		m_sampleCounter(0),
 		m_dataSize(0)
@@ -109,8 +112,14 @@ bool Datagram::deserialize(const char* arr)
 	streamer.read(m_dataCount);     // 1 bytes
 	streamer.read(m_frameTime);     // 4 bytes
 	streamer.read(m_avatarId);      // 1 bytes
+	// The pose datagrams describe their own segment layout here: how many of
+	// the items are body segments, how many are props and how many are finger
+	// tracking segments.  Other datagram types leave these bytes undefined.
+	streamer.read(m_bodySegmentCount);   // 1 byte
+	streamer.read(m_propCount);          // 1 byte
+	streamer.read(m_fingerSegmentCount); // 1 byte
 	std::string str;
-	streamer.read(str,7);   // remove other 7 bytes 
+	streamer.read(str,4);   // 2 reserved bytes + 2 bytes payload size
 
 	// deserialize the data part of the Packet
 	deserializeData(streamer);
@@ -158,6 +167,33 @@ uint8_t Datagram::avatarId() const
 uint8_t Datagram::dataCount() const
 {
 	return m_dataCount;
+}
+
+/*! Number of body segments among the items of a pose datagram (header byte 17).
+
+  Only meaningful for the pose datagrams (Euler, quaternion, position); other
+  datagram types do not fill this field.
+*/
+uint8_t Datagram::bodySegmentCount() const
+{
+	return m_bodySegmentCount;
+}
+
+/*! Number of prop segments among the items of a pose datagram (header byte 18).
+
+  A prop is a rigid object attached to the body (a sword, a ball, ...).  MVN
+  streams it as extra segments inside the body's own datagram, placed right
+  after the body segments and before any finger tracking segments.
+*/
+uint8_t Datagram::propCount() const
+{
+	return m_propCount;
+}
+
+/*! Number of finger tracking segments among the items of a pose datagram (header byte 19). */
+uint8_t Datagram::fingerSegmentCount() const
+{
+	return m_fingerSegmentCount;
 }
 
 /*! Set the number of items in this packet */

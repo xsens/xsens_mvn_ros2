@@ -3,6 +3,10 @@
     <arg name="launch_rviz" default="true"/>
     <arg name="launch_description" default="true"/>
     <arg name="model_name" default="skeleton"/>
+    <arg name="reference_frame" default="world"/>
+    <arg name="udp_port" default="9763"/>
+    <arg name="avatar_id" default="0"/>
+    <arg name="track_all_avatars" default="false"/>
     <arg name="rviz_config_file" default="$(find-pkg-share xsens_mvn_ros2_description)/config/xsens_visualization.rviz"/>
 
     <include file="$(find-pkg-share xsens_mvn_ros2_stream)/launch/xsens_stream.launch.xml">
@@ -10,6 +14,10 @@
         <arg name="launch_rviz" value="$(var launch_rviz)"/>
         <arg name="launch_description" value="$(var launch_description)"/>
         <arg name="model_name" value="$(var model_name)"/>
+        <arg name="reference_frame" value="$(var reference_frame)"/>
+        <arg name="udp_port" value="$(var udp_port)"/>
+        <arg name="avatar_id" value="$(var avatar_id)"/>
+        <arg name="track_all_avatars" value="$(var track_all_avatars)"/>
         <arg name="rviz_config_file" value="$(var rviz_config_file)"/>
     </include>
 </launch>

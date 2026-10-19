@@ -81,6 +81,9 @@ public:
   uint8_t avatarId() const;
   uint8_t dataCount() const;
   uint8_t datagramCounter() const;
+  uint8_t bodySegmentCount() const;
+  uint8_t propCount() const;
+  uint8_t fingerSegmentCount() const;
 
   static int messageType(const char* arr);
   std::string decode(StreamingProtocol proto) const;
@@ -101,6 +104,9 @@ private:
   uint8_t m_avatarId;
   uint8_t m_dataCount;
   uint8_t m_dgramCounter;
+  uint8_t m_bodySegmentCount;
+  uint8_t m_propCount;
+  uint8_t m_fingerSegmentCount;
   int m_dataSize;
 
   int getDataSize() const;

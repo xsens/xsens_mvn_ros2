@@ -98,6 +98,13 @@ if(BUILD_TESTING)
   target_include_directories(test_human_data_handler PRIVATE include)
   target_link_libraries(test_human_data_handler ${PROJECT_NAME}_HumanDataHandler)
 
+  ament_add_gtest(test_avatar_demux test/test_avatar_demux.cpp)
+  target_include_directories(test_avatar_demux PRIVATE include)
+  target_compile_definitions(test_avatar_demux PRIVATE
+    TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data"
+  )
+  target_link_libraries(test_avatar_demux ${PROJECT_NAME}_XsensStreamClient)
+
   ament_add_gtest(test_stream_client_mock test/test_stream_client_mock.cpp)
   target_link_libraries(test_stream_client_mock
     xsens_mvn_ros2_common::xsens_mvn_ros2_common_SkeletonPublisher

@@ -3,7 +3,9 @@
 #pragma once
 
 #include <atomic>
+#include <map>
 #include <memory>
+#include <string>
 
 #include <diagnostic_updater/diagnostic_updater.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -49,13 +51,24 @@ private:
   std::shared_ptr<xsens_stream_node::ParamListener> m_paramListener;
   std::unique_ptr<IMotionCaptureSource> m_xsensClient;
   std::unique_ptr<tf2_ros::TransformBroadcaster> m_tfBroadcaster;
-  std::unique_ptr<SkeletonPublisher> m_skeletonPub;
+  /// One publisher set per avatar, created as avatars are discovered.
+  std::map<uint8_t, std::unique_ptr<SkeletonPublisher>> m_skeletonPubs;
+  std::map<uint8_t,
+    rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::Point>::SharedPtr> m_comPubs;
+  /// TF prefix / topic namespace chosen for each avatar.
+  std::map<uint8_t, std::string> m_avatarNames;
+  bool m_publishersActive{false};
+
+  /// Name for @p avatar_id: an explicit avatar_names entry if given, else
+  /// model_name for the primary avatar and "<model_name>_<id>" for the rest.
+  std::string avatarName(uint8_t avatar_id);
+  /// Creates (and activates, if the node is active) this avatar's publishers.
+  void ensureAvatarPublishers(uint8_t avatar_id);
   std::unique_ptr<diagnostic_updater::Updater> m_diagnosticUpdater;
   // timers
   rclcpp::TimerBase::SharedPtr m_updateTimer;
   rclcpp::TimerBase::SharedPtr m_diagnosticTimer;
   // publishers
-  rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::Point>::SharedPtr m_comPublisher;
   // staleness tracking
   std::atomic<int64_t> m_lastDataTimeNs{0};
 };

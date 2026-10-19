@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -19,6 +20,7 @@
 #include <std_srvs/srv/trigger.hpp>
 #include <tf2_ros/buffer.h>                                                // NOLINT(build/include_order)
 #include <tf2_ros/transform_listener.h>                                    // NOLINT(build/include_order)
+#include <xsens_mvn_ros2_description/segment_defs.hpp>
 #include <xsens_mvn_ros2_description/xsens_urdf_publisher_parameters.hpp>
 
 namespace
@@ -52,69 +54,21 @@ namespace
 // Z-only branch (single-axis approximation of BSN's uniform scale).
 constexpr double kRefHipWidth = 0.16;   // bilateral hip joint centre distance (m)
 
-/// Which local mesh axis points from the segment origin toward its child joint.
-enum class ScaleAxis { X = 0, Y = 1, Z = 2, Uniform = 3 };
+using xsens_mvn_ros2_description::kFingerSegments;
+using xsens_mvn_ros2_description::kSegments;
+using xsens_mvn_ros2_description::ScaleAxis;
+using xsens_mvn_ros2_description::SegmentDef;
 
-struct SegmentDef
+/// True for the MANUS finger segments, i.e. any name in the finger table.
+/// Deriving this from the table itself keeps the one source of truth local to
+/// this package and avoids a second copy of MVN's hand-segment naming.
+bool isFingerSegment(const char * name)
 {
-  const char * name;        //!< Canonical snake_case segment name
-  const char * mesh;        //!< PascalCase .dae filename prefix
-  const char * child;       //!< Canonical child segment ("" = leaf)
-  const char * parent;      //!< Kinematic parent name
-  double refLength;        //!< Mesh extent along distanceAxis at scale 1.0 (m)
-  ScaleAxis scaleAxis;     //!< Primary elongation axis of the mesh
-  ScaleAxis distanceAxis;  //!< TF component used to compute the scale factor
-  const char * visualRpy;  //!< Visual origin rotation (radians)
-  const char * visualXyz;  //!< Visual origin translation (metres)
-};
-
-// Segment table — identical to the simple publisher.
-static const std::array<SegmentDef, 23> kSegments = {{  // NOLINT
-  // Spine
-  {"pelvis", "Pelvis", "l5", "world", 0.096, ScaleAxis::Z, ScaleAxis::Uniform, "0 0 0", "0 0 0"},            // NOLINT
-  {"l5", "L5", "l3", "pelvis", 0.106, ScaleAxis::Z, ScaleAxis::Uniform, "0 0 0", "0 0 0"},                   // NOLINT
-  {"l3", "L3", "t12", "l5", 0.095, ScaleAxis::Z, ScaleAxis::Uniform, "0 0 0", "0 0 0"},                      // NOLINT
-  {"t12", "T12", "t8", "l3", 0.094, ScaleAxis::Z, ScaleAxis::Uniform, "0 0 0", "0 0 0"},                     // NOLINT
-  {"t8", "T8", "neck", "t12", 0.128, ScaleAxis::Z, ScaleAxis::Uniform, "0 0 0", "0 0 0"},                    // NOLINT
-  {"neck", "Neck", "head", "t8", 0.104, ScaleAxis::Z, ScaleAxis::Uniform, "0 0 0", "0 0 0"},                 // NOLINT
-  {"head", "Head", "", "neck", 0.0, ScaleAxis::Uniform, ScaleAxis::Uniform, "0 0 0", "0 0 0"},                   // NOLINT
-  // Left arm
-  {"left_shoulder", "LeftShoulder", "left_upper_arm", "t8", 0.140, ScaleAxis::Y, ScaleAxis::Uniform,
-    "0 0 0", "0 0 0"},                                                                                                                // NOLINT
-  {"left_upper_arm", "LeftUpperArm", "left_forearm", "left_shoulder", 0.306, ScaleAxis::Y,
-    ScaleAxis::Uniform, "-1.5708 0 0", "0 0 0"},                                                                                            // NOLINT
-  {"left_forearm", "LeftForeArm", "left_hand", "left_upper_arm", 0.254, ScaleAxis::Y,
-    ScaleAxis::Uniform, "-1.5708 0 0", "0 0 0"},                                                                                            // NOLINT
-  {"left_hand", "LeftHand", "", "left_forearm", 0.0, ScaleAxis::Uniform, ScaleAxis::Uniform,
-    "-1.5708 0 0", "0 0 0"},                                                                                                                    // NOLINT
-  // Right arm
-  {"right_shoulder", "RightShoulder", "right_upper_arm", "t8", 0.140, ScaleAxis::Y,
-    ScaleAxis::Uniform, "0 0 0", "0 0 0"},                                                                                                // NOLINT
-  {"right_upper_arm", "RightUpperArm", "right_forearm", "right_shoulder", 0.306, ScaleAxis::Y,
-    ScaleAxis::Uniform, "1.5708 0 0", "0 0 0"},                                                                                                // NOLINT
-  {"right_forearm", "RightForeArm", "right_hand", "right_upper_arm", 0.254, ScaleAxis::Y,
-    ScaleAxis::Uniform, "1.5708 0 0", "0 0 0"},                                                                                                // NOLINT
-  {"right_hand", "RightHand", "", "right_forearm", 0.0, ScaleAxis::Uniform, ScaleAxis::Uniform,
-    "1.5708 0 0", "0 0 0"},                                                                                                                        // NOLINT
-  // Left leg
-  {"left_upper_leg", "LeftUpperLeg", "left_lower_leg", "pelvis", 0.417, ScaleAxis::Z,
-    ScaleAxis::Uniform, "0 0 0", "0 0 0"},                                                                                            // NOLINT
-  {"left_lower_leg", "LeftLowerLeg", "left_foot", "left_upper_leg", 0.408, ScaleAxis::Z,
-    ScaleAxis::Uniform, "0 0 0", "0 0 0"},                                                                                            // NOLINT
-  {"left_foot", "LeftFoot", "left_toe", "left_lower_leg", 0.1526, ScaleAxis::Uniform, ScaleAxis::X,
-    "0 0 0", "0 0 0"},                                                                                                                 // NOLINT
-  {"left_toe", "LeftToe", "", "left_foot", 0.0, ScaleAxis::Uniform, ScaleAxis::X, "0 0 0",
-    "-0.010 0 -0.015"},                                                                                                                       // NOLINT
-  // Right leg
-  {"right_upper_leg", "RightUpperLeg", "right_lower_leg", "pelvis", 0.417, ScaleAxis::Z,
-    ScaleAxis::Uniform, "0 0 0", "0 0 0"},                                                                                               // NOLINT
-  {"right_lower_leg", "RightLowerLeg", "right_foot", "right_upper_leg", 0.408, ScaleAxis::Z,
-    ScaleAxis::Uniform, "0 0 0", "0 0 0"},                                                                                                // NOLINT
-  {"right_foot", "RightFoot", "right_toe", "right_lower_leg", 0.1526, ScaleAxis::Uniform,
-    ScaleAxis::X, "0 0 0", "0 0 0"},                                                                                                       // NOLINT
-  {"right_toe", "RightToe", "", "right_foot", 0.0, ScaleAxis::Uniform, ScaleAxis::X, "0 0 0",
-    "-0.010 0 -0.015"},                                                                                                                           // NOLINT
-}};
+  const std::string n(name);
+  return std::any_of(
+    kFingerSegments.begin(), kFingerSegments.end(),
+    [&](const SegmentDef & seg) {return n == seg.name;});
+}
 
 /// Per-segment anisotropic scale (sx, sy, sz).
 using Scale3 = std::array<double, 3>;
@@ -286,6 +240,7 @@ private:
   std::string m_modelName;
   double m_republishPeriodS{10.0};
   bool m_published = false;
+  std::set<std::string> m_fingersActive;  //!< Sides with a live MANUS finger block
   int m_clampedSegments = 0;
   rclcpp::Time m_lastPublishTime{0, 0, RCL_ROS_TIME};
   std::unique_ptr<tf2_ros::Buffer> m_tfBuffer;
@@ -295,6 +250,48 @@ private:
   rclcpp::TimerBase::SharedPtr m_diagnosticTimer;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr m_republishSrv;
   std::unique_ptr<diagnostic_updater::Updater> m_diagnosticUpdater;
+
+  /// True once the stream node has started broadcasting finger frames for
+  /// this hand.  The carpus is the first segment of the hand's block,
+  /// so its presence means the whole block is being published.
+  bool hasFingers(const std::string & side)
+  {
+    return m_tfBuffer->canTransform(
+      m_modelName + "_" + side + "_hand",
+      m_modelName + "_" + side + "_carpus",
+      tf2::TimePointZero);
+  }
+
+  /// The closed-fist hand mesh spans the whole hand including fingers, so it
+  /// would intersect the per-phalange meshes.  Drop it on a side whose finger
+  /// block is live; the carpus mesh draws the palm instead.
+  bool suppressVisual(const char * segName) const
+  {
+    const std::string n(segName);
+    return (n == "left_hand" && m_fingersActive.count("left") > 0) ||
+           (n == "right_hand" && m_fingersActive.count("right") > 0);
+  }
+
+  /// The body segments, plus each hand's finger block when MANUS data is live.
+  /// Recomputed on every publish so gloves connecting (or dropping out) mid
+  /// session are picked up on the next re-publish.
+  std::vector<SegmentDef> buildActiveSegments()
+  {
+    std::vector<SegmentDef> segs(kSegments.begin(), kSegments.end());
+    m_fingersActive.clear();
+    for (const auto & side : {std::string("left"), std::string("right")}) {
+      if (!hasFingers(side)) {
+        continue;
+      }
+      for (const auto & f : kFingerSegments) {
+        if (std::string(f.name).rfind(side + "_", 0) == 0 && isFingerSegment(f.name)) {
+          segs.push_back(f);
+        }
+      }
+      m_fingersActive.insert(side);
+    }
+    return segs;
+  }
 
   /// Returns the distance (metres) between two segment TF frame origins.
   /// When axis is X, Y, or Z the absolute value of that component is returned;
@@ -352,7 +349,8 @@ private:
   /// Each component is clamped independently to [0.5, 2.0].
   bool tryPublish()
   {
-    std::vector<Scale3> scales(kSegments.size(), {1.0, 1.0, 1.0});
+    const std::vector<SegmentDef> segs = buildActiveSegments();
+    std::vector<Scale3> scales(segs.size(), {1.0, 1.0, 1.0});
 
     // Pass 1: compute anisotropic Scale3 for every non-leaf segment.
     int clampedCount = 0;
@@ -368,14 +366,20 @@ private:
         return clamped;
       };
 
-    for (size_t i = 0; i < kSegments.size(); ++i) {
-      const auto & seg = kSegments[i];
+    for (size_t i = 0; i < segs.size(); ++i) {
+      const auto & seg = segs[i];
       if (std::string(seg.child).empty() || seg.refLength <= 0.0) {
-        continue;  // leaf — handled in pass 2
+        continue;  // leaf, or no mesh to scale — handled in pass 2
       }
 
       double actual = segmentLength(seg.name, seg.child, seg.distanceAxis);
       if (actual < 0.0) {
+        // A missing finger transform must not hold back the whole body URDF:
+        // fall back to the neutral mesh size and keep going.  Body segments
+        // stay strict, since the model is meaningless without them.
+        if (isFingerSegment(seg.name)) {
+          continue;
+        }
         RCLCPP_INFO_THROTTLE(
           get_logger(), *get_clock(), 2000,
           "Waiting for TF: %s_%s -> %s_%s",
@@ -430,19 +434,19 @@ private:
     m_clampedSegments = clampedCount;
 
     // Pass 2: leaf segments inherit the full Scale3 of their parent.
-    for (size_t i = 0; i < kSegments.size(); ++i) {
-      if (!std::string(kSegments[i].child).empty()) {
+    for (size_t i = 0; i < segs.size(); ++i) {
+      if (!std::string(segs[i].child).empty()) {
         continue;
       }
-      for (size_t p = 0; p < kSegments.size(); ++p) {
-        if (std::string(kSegments[p].name) == std::string(kSegments[i].parent)) {
+      for (size_t p = 0; p < segs.size(); ++p) {
+        if (std::string(segs[p].name) == std::string(segs[i].parent)) {
           scales[i] = scales[p];
           break;
         }
       }
     }
 
-    publishUrdf(scales);
+    publishUrdf(segs, scales);
 
     if (!m_published) {
       m_published = true;
@@ -487,11 +491,15 @@ private:
     }
   }
 
-  void publishUrdf(const std::vector<Scale3> & scales)
+  void publishUrdf(const std::vector<SegmentDef> & segs, const std::vector<Scale3> & scales)
   {
     std::ostringstream xml;
+    // The robot name must be unique per model.  RViz keys its RobotModel
+    // display off it, so two avatars both called "humanoid" collide: one
+    // display renders and the other reports an invalid model until the first
+    // is switched off.  Naming it after the model keeps every avatar distinct.
     xml << "<?xml version=\"1.0\"?>\n"
-        << "<robot name=\"humanoid\">\n\n"
+        << "<robot name=\"" << m_modelName << "\">\n\n"
         << "  <!-- World link (reference frame). -->\n"
         << "  <link name=\"world\"/>\n\n"
         << "  <!-- Segments form a kinematic tree rooted at pelvis.\n"
@@ -501,8 +509,8 @@ private:
         << "         - Feet X: footSize / 0.247 m ref (or TF.x fallback).\n"
         << "         - All other segments: single-axis TF length scaling. -->\n\n";
 
-    for (size_t i = 0; i < kSegments.size(); ++i) {
-      const auto & seg = kSegments[i];
+    for (size_t i = 0; i < segs.size(); ++i) {
+      const auto & seg = segs[i];
       const auto & sc = scales[i];
       const std::string scale = scaleString(sc[0], sc[1], sc[2]);
       const std::string link = m_modelName + "_" + seg.name;
@@ -510,8 +518,22 @@ private:
         (std::string(seg.parent) == "world") ? "world" : m_modelName + "_" + seg.parent;
       const std::string jointName = m_modelName + "_" + seg.parent + "_to_" + seg.name;
 
-      xml << "  <link name=\"" << link << "\">\n"
-          << "    <visual>\n"
+      xml << "  <link name=\"" << link << "\">\n";
+
+      // A link is emitted without geometry when no mesh is shipped for it
+      // (the two missing metacarpals), and when the closed-fist hand mesh
+      // would sit on top of the individual finger meshes.
+      if (std::string(seg.mesh).empty() || suppressVisual(seg.name)) {
+        xml << "  </link>\n"
+            << "  <joint name=\"" << jointName << "\" type=\"fixed\">\n"
+            << "    <parent link=\"" << parentLink << "\"/>\n"
+            << "    <child link=\"" << link << "\"/>\n"
+            << "    <origin xyz=\"0 0 0\" rpy=\"0 0 0\"/>\n"
+            << "  </joint>\n\n";
+        continue;
+      }
+
+      xml << "    <visual>\n"
           << "      <origin xyz=\"" << scaleVisualXyz(seg.visualXyz, sc[0], sc[1], sc[2])
           << "\" rpy=\"" << seg.visualRpy << "\"/>\n"
           << "      <geometry>\n"
@@ -551,11 +573,11 @@ private:
     m_lastPublishTime = now();
     RCLCPP_INFO(get_logger(),
       "Published robot_description for model '%s'.", m_modelName.c_str());
-    for (size_t i = 0; i < kSegments.size(); ++i) {
-      if (!std::string(kSegments[i].child).empty()) {
+    for (size_t i = 0; i < segs.size(); ++i) {
+      if (!std::string(segs[i].child).empty()) {
         RCLCPP_DEBUG(get_logger(),
-          "  %-20s scale = (%.3f, %.3f, %.3f)",
-          kSegments[i].name, scales[i][0], scales[i][1], scales[i][2]);
+          "  %-24s scale = (%.3f, %.3f, %.3f)",
+          segs[i].name, scales[i][0], scales[i][1], scales[i][2]);
       }
     }
   }
