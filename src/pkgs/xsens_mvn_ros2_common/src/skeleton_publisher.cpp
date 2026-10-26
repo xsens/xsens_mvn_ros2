@@ -42,6 +42,7 @@ void SkeletonPublisher::publishLinkStates(
 
   xsens_mvn_msgs::msg::LinkStateArray link_state_array;
   link_state_array.header.stamp = stamp;
+  link_state_array.header.frame_id = reference_frame;
 
   for (const auto & [segment, kin] : segments) {
     const std::string & parent_name = kineticParent(segment);
